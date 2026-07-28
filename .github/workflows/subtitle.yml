@@ -1,0 +1,71 @@
+name: Subtitle Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'YouTube URL'
+        required: true
+        type: string
+
+jobs:
+  subtitle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg fonts-vazirmatn nodejs npm
+          npm install -g @configu/cli || true
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install yt-dlp faster-whisper pysubs2 litellm openai
+
+      - name: Download video (yt-dlp)
+        run: |
+          python3 scripts/01_download.py "${{ inputs.url }}" output/video.mp4
+
+      - name: Whisper transcription (large-v3)
+        run: |
+          python3 scripts/02_whisper.py output/video.mp4 output/transcript.json
+
+      - name: Translate to Persian (DeepSeek via LiteLLM)
+        env:
+          NVIDIA_API_KEYS: ${{ secrets.NVIDIA_API_KEYS }}
+        run: |
+          python3 scripts/03_translate.py output/transcript.json output/translated.json
+
+      - name: Build SRT + Validate (3x)
+        run: |
+          python3 scripts/04_build_srt.py output/transcript.json output/translated.json output/subtitle.srt
+          python3 scripts/validate_subs.py output/subtitle.srt fa
+          python3 scripts/validate_subs.py output/subtitle.srt fa
+          python3 scripts/validate_subs.py output/subtitle.srt fa
+
+      - name: Build cinema ASS
+        run: |
+          VIDEO_HEIGHT=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 output/video.mp4)
+          FONTSIZE=$(python3 -c "print(round($VIDEO_HEIGHT * 0.022))")
+          python3 scripts/make_cinema_ass.py output/subtitle.srt output/subtitle.ass $FONTSIZE
+
+      - name: Burn-in subtitles
+        run: |
+          python3 scripts/05_burnin.py output/video.mp4 output/subtitle.ass output/final.mp4
+
+      - name: Upload to GitHub Release
+        id: release
+        run: |
+          python3 scripts/06_upload.py output/final.mp4 output/subtitle.srt output/subtitle.ass
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Output result
+        run: |
+          echo "RESULT_FILE=steps.release.outputs.download_url" >> $GITHUB_ENV
+          cat output/result.json
