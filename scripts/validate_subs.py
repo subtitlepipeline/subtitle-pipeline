@@ -19,7 +19,7 @@ import re
 
 
 def validate_persian(text):
-    ONLY removes: CJK (Chinese/Japanese), Cyrillic (Russian), Korean.
+    """ONLY removes: CJK (Chinese/Japanese), Cyrillic (Russian), Korean.
     NEVER removes English/Latin characters — tech terms like Claude, Hermes, AI,
     API, Telegram are part of Persian subtitles and must be preserved."""
     issues = []
