@@ -30,9 +30,10 @@ jobs:
         env:
           VPS_IP: ${{ secrets.VPS_IP }}
         run: |
-          # VPS downloads the video and serves it; we just curl it
-          curl -sL "http://$VPS_IP:9999/video.mp4" -o output/video.mp4
+          mkdir -p output
+          curl -v -L "http://$VPS_IP:9999/video.mp4" -o output/video.mp4
           ls -lh output/video.mp4
+          file output/video.mp4
 
       - name: Whisper transcription (large-v3)
         run: |
