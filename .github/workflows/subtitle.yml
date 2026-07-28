@@ -24,7 +24,8 @@ jobs:
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
-          pip install faster-whisper pysubs2 litellm openai pyyaml requests
+          pip install faster-whisper pysubs2 openai pyyaml requests
+          pip install 'litellm[proxy]'
 
       - name: Download video from VPS
         env:
