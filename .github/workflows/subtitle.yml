@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'YouTube URL'
+        description: 'YouTube URL (downloaded on VPS, served via HTTP)'
         required: true
         type: string
 
@@ -19,20 +19,20 @@ jobs:
       - name: Install system packages
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg fonts-vazirmatn nodejs npm curl
-          # Install deno for yt-dlp JS runtime
-          curl -fsSL https://deno.land/install.sh | sh
-          echo "$HOME/.deno/bin" >> $GITHUB_PATH
+          sudo apt-get install -y -qq ffmpeg fonts-vazirmatn curl
 
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
-          pip install --upgrade yt-dlp
           pip install faster-whisper pysubs2 litellm openai pyyaml requests
 
-      - name: Download video (yt-dlp)
+      - name: Download video from VPS
+        env:
+          VPS_IP: ${{ secrets.VPS_IP }}
         run: |
-          python3 scripts/01_download.py "${{ inputs.url }}" output/video.mp4
+          # VPS downloads the video and serves it; we just curl it
+          curl -sL "http://$VPS_IP:9999/video.mp4" -o output/video.mp4
+          ls -lh output/video.mp4
 
       - name: Whisper transcription (large-v3)
         run: |
@@ -62,7 +62,6 @@ jobs:
           python3 scripts/05_burnin.py output/video.mp4 output/subtitle.ass output/final.mp4
 
       - name: Upload to GitHub Release
-        id: release
         run: |
           python3 scripts/06_upload.py output/final.mp4 output/subtitle.srt output/subtitle.ass
         env:
