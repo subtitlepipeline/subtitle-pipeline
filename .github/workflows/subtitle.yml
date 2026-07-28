@@ -19,13 +19,16 @@ jobs:
       - name: Install system packages
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg fonts-vazirmatn nodejs npm
-          npm install -g @configu/cli || true
+          sudo apt-get install -y -qq ffmpeg fonts-vazirmatn nodejs npm curl
+          # Install deno for yt-dlp JS runtime
+          curl -fsSL https://deno.land/install.sh | sh
+          echo "$HOME/.deno/bin" >> $GITHUB_PATH
 
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
-          pip install yt-dlp faster-whisper pysubs2 litellm openai
+          pip install --upgrade yt-dlp
+          pip install faster-whisper pysubs2 litellm openai pyyaml requests
 
       - name: Download video (yt-dlp)
         run: |
@@ -67,5 +70,4 @@ jobs:
 
       - name: Output result
         run: |
-          echo "RESULT_FILE=steps.release.outputs.download_url" >> $GITHUB_ENV
           cat output/result.json

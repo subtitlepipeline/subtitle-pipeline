@@ -8,10 +8,12 @@ os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
 cmd = [
     "yt-dlp",
+    "--js-runtimes", "deno",
     "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
     "-o", output_path,
     "--merge-output-format", "mp4",
     "--no-playlist",
+    "--extractor-args", "youtube:player_client=android,web",
     url
 ]
 print(f"⬇️ Downloading: {url}")
