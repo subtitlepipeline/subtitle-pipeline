@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
 Step 3: Translate transcripts to Persian using DeepSeek via LiteLLM.
-- English→Persian: one-pass (fast)
-- Non-English→Persian (Arabic, Turkish, etc.): two-pass + self-correction (quality)
+One-pass with an enhanced, high-quality translation prompt.
 """
-import sys, os, json, subprocess, time, re, http.client
+import sys, os, json, subprocess, time, re
 
 transcript_path = sys.argv[1]
 output_path = sys.argv[2]
@@ -24,9 +23,7 @@ lang_map = {"ar": "Arabic", "en": "English", "fa": "Persian", "tr": "Turkish",
 source_name = lang_map.get(source_lang, source_lang)
 
 print(f"📝 {len(texts)} segments to translate (source: {source_name})")
-
-# All languages use two-pass + self-correction for maximum quality
-print(f"🔁 Two-pass + self-correction enabled")
+print(f"⚡ Enhanced one-pass translation")
 
 # --- Start LiteLLM proxy ---
 api_keys_str = os.environ.get("NVIDIA_API_KEYS", "")
@@ -60,7 +57,7 @@ with open(config_path, "w") as f:
 print("🚀 Starting LiteLLM proxy on port 4000...")
 litellm_proc = subprocess.Popen(
     ["litellm", "--config", config_path, "--host", "0.0.0.0", "--port", "4000"],
-    stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
 )
 
 # Wait for proxy to be ready
@@ -80,15 +77,13 @@ for attempt in range(60):
 else:
     print("❌ LiteLLM failed to start")
     litellm_proc.terminate()
-    out, _ = litellm_proc.communicate(timeout=5)
-    print(out.decode()[-2000:])
     sys.exit(1)
 
 from openai import OpenAI
 client = OpenAI(base_url="http://localhost:4000/v1", api_key="sk-anything")
 
-def call_deepseek(prompt, max_tokens=2000, temperature=0.3, retries=3, timeout=120):
-    """Call DeepSeek with retries and timeout on failure."""
+def call_deepseek(prompt, max_tokens=3000, temperature=0.3, retries=3, timeout=120):
+    """Call DeepSeek with retries and timeout."""
     last_error = None
     for attempt in range(retries + 1):
         try:
@@ -104,8 +99,9 @@ def call_deepseek(prompt, max_tokens=2000, temperature=0.3, retries=3, timeout=1
                 return content.strip()
         except Exception as e:
             last_error = e
+            print(f"  ⚠️ Attempt {attempt+1}/{retries+1} failed: {e}")
             if attempt < retries:
-                time.sleep(2)
+                time.sleep(3)
     raise last_error or Exception("DeepSeek failed after retries")
 
 def parse_numbered_response(content, expected_count):
@@ -116,10 +112,37 @@ def parse_numbered_response(content, expected_count):
         cleaned = re.sub(r'^\d+\.\s*', '', line.strip())
         if cleaned:
             result.append(cleaned)
-    # Fix count mismatch
     while len(result) < expected_count:
         result.append(result[-1] if result else "")
     return result[:expected_count]
+
+# --- Enhanced translation prompt ---
+# This prompt is carefully designed to produce fluent, natural Persian
+# translations in a single pass, covering all the quality requirements
+# that were previously handled by the two-pass approach.
+
+def build_prompt(source_name, numbered):
+    return f"""You are an expert literary translator specializing in {source_name}→Persian (Farsi) translation.
+
+Your task: Translate each subtitle line below into NATURAL, FLUENT, ELEGANT Persian.
+
+Translation guidelines:
+1. Use polished, literate Persian — the kind used in quality audiobooks and dubbing.
+2. Translate the MEANING, not word-for-word. Restructure sentences to sound natural in Persian.
+3. Use correct verb forms: match subject (singular/plural) with verb (یک/چند).
+4. For Arabic religious phrases (صلوات، دعا، سلام): translate their FULL meaning to Persian naturally.
+   - "صلی الله علیه وسلم" → "درود خدا بر او باد"
+   - "رضی الله عنها" → "خدا از او راضی باشد"
+   - "سبحانه و تعالی" → "منزه و برتر است"
+5. Keep ALL technical terms, names, and proper nouns in their original form (AI, API, YouTube, Claude, Hermes, etc.).
+6. Use formal but accessible Persian — not overly literary, not colloquial.
+7. Maintain the context flow between lines — read consecutive lines as a connected narrative.
+8. Keep translations concise — match roughly the length of the source line.
+
+Return ONLY the Persian translations, one per line, numbered exactly like the input.
+Do NOT add any explanation, notes, or commentary.
+
+{numbered}"""
 
 # --- Translate in batches ---
 BATCH_SIZE = 40
@@ -132,51 +155,18 @@ for i in range(0, len(texts), BATCH_SIZE):
     print(f"🔄 Batch {batch_num}/{total_batches}...")
 
     numbered = "\n".join(f"{j+1}. {t}" for j, t in enumerate(batch))
-
-    # === PASS 1: Translate ===
-    prompt1 = f"""You are a professional translator from {source_name} to Persian (Farsi).
-Translate the following {source_name} subtitle lines to fluent, natural Persian.
-For Arabic religious phrases (salawat, du'a, etc.): translate their meaning to Persian.
-Return ONLY the Persian translations, one per line, numbered exactly as input.
-Keep technical terms in English when they are common.
-
-{numbered}"""
+    prompt = build_prompt(source_name, numbered)
 
     try:
-        raw = call_deepseek(prompt1)
+        raw = call_deepseek(prompt)
     except Exception as e:
         print(f"  ❌ Translation failed: {e}")
         translations.extend(batch)
         continue
 
-    pass1 = parse_numbered_response(raw, len(batch))
-    print(f"  ✅ Pass 1: {len(pass1)} translations")
-
-    # === PASS 2: Self-correction & polishing (all languages) ===
-    pass1_numbered = "\n".join(f"{j+1}. {t}" for j, t in enumerate(pass1))
-    prompt2 = f"""You are a Persian language editor. Review and improve the following Persian translations.
-
-First, check for these issues:
-1. Arabic phrases left untranslated → translate them to Persian
-2. Grammatical errors (wrong verb conjugations, pronoun mismatches)
-3. Unnatural or awkward phrasing → make it fluent Persian
-
-Then rewrite each line to be NATURAL, FLUENT Persian.
-Return ONLY the corrected Persian translations, one per line, numbered exactly as input.
-Do NOT change the meaning.
-
-{pass1_numbered}"""
-
-    try:
-        raw2 = call_deepseek(prompt2, max_tokens=2000, temperature=0.2)
-    except Exception as e:
-        print(f"  ⚠️ Self-correction failed, keeping pass 1: {e}")
-        translations.extend(pass1)
-        continue
-
-    pass2 = parse_numbered_response(raw2, len(batch))
-    print(f"  ✅ Pass 2: corrected {sum(1 for a,b in zip(pass1, pass2) if a != b)}/{len(pass2)} lines")
-    translations.extend(pass2)
+    batch_translations = parse_numbered_response(raw, len(batch))
+    translations.extend(batch_translations)
+    print(f"  ✅ Got {len(batch_translations)} translations")
 
 # --- Cleanup LiteLLM ---
 litellm_proc.terminate()
