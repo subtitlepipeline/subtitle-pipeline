@@ -23,7 +23,7 @@ for seg in segments:
     })
 
 with open(output_path, "w", encoding="utf-8") as f:
-    json.dump({"segments": seg_list}, f, ensure_ascii=False, indent=2)
+    json.dump({"segments": seg_list, "language": info.language}, f, ensure_ascii=False, indent=2)
 
 print(f"✅ Whisper done: {len(seg_list)} segments, language: {info.language}")
 print(f"📁 Saved: {output_path}")

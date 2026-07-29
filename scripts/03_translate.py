@@ -14,7 +14,10 @@ with open(transcript_path, encoding="utf-8") as f:
     data = json.load(f)
 segments = data["segments"]
 texts = [seg["text"] for seg in segments]
-print(f"📝 {len(texts)} segments to translate")
+
+# Detect source language from Whisper output
+source_lang = data.get("language", "auto")
+print(f"📝 {len(texts)} segments to translate (source: {source_lang})")
 
 # --- Start LiteLLM proxy ---
 api_keys_str = os.environ.get("NVIDIA_API_KEYS", "")
@@ -97,7 +100,8 @@ for i in range(0, len(texts), BATCH_SIZE):
     print(f"🔄 Translating batch {batch_num}/{total_batches}...")
 
     numbered = "\n".join(f"{j+1}. {t}" for j, t in enumerate(batch))
-    prompt = f"""Translate the following English subtitle lines to Persian (Farsi). 
+    lang_hint = f"from {source_lang}" if source_lang != "auto" else "from any language"
+    prompt = f"""Translate the following subtitle lines {lang_hint} to Persian (Farsi). 
 Return ONLY the Persian translations, one per line, numbered exactly like the input.
 Keep technical terms (AI, API, YouTube, etc.) in English. Do NOT add any explanation.
 
