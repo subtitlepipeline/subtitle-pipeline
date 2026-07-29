@@ -18,11 +18,15 @@ texts = [seg["text"] for seg in segments]
 
 # Detect source language from Whisper output
 source_lang = data.get("language", "en")
-print(f"📝 {len(texts)} segments to translate (source: {source_lang})")
+lang_map = {"ar": "Arabic", "en": "English", "fa": "Persian", "tr": "Turkish",
+            "ur": "Urdu", "hi": "Hindi", "es": "Spanish", "fr": "French",
+            "de": "German", "ru": "Russian", "pt": "Portuguese", "id": "Indonesian"}
+source_name = lang_map.get(source_lang, source_lang)
 
-# Only use two-pass for non-English
-is_non_english = source_lang not in ("en", "english", "")
-print(f"{'🔁 Two-pass + self-correction enabled' if is_non_english else '⚡ One-pass translation (English→Persian)'}")
+print(f"📝 {len(texts)} segments to translate (source: {source_name})")
+
+# All languages use two-pass + self-correction for maximum quality
+print(f"🔁 Two-pass + self-correction enabled")
 
 # --- Start LiteLLM proxy ---
 api_keys_str = os.environ.get("NVIDIA_API_KEYS", "")
@@ -116,12 +120,6 @@ def parse_numbered_response(content, expected_count):
         result.append(result[-1] if result else "")
     return result[:expected_count]
 
-# --- Language name map ---
-lang_map = {"ar": "Arabic", "en": "English", "fa": "Persian", "tr": "Turkish",
-            "ur": "Urdu", "hi": "Hindi", "es": "Spanish", "fr": "French",
-            "de": "German", "ru": "Russian", "pt": "Portuguese", "id": "Indonesian"}
-source_name = lang_map.get(source_lang, source_lang)
-
 # --- Translate in batches ---
 BATCH_SIZE = 20
 translations = []
@@ -135,18 +133,11 @@ for i in range(0, len(texts), BATCH_SIZE):
     numbered = "\n".join(f"{j+1}. {t}" for j, t in enumerate(batch))
 
     # === PASS 1: Translate ===
-    if is_non_english:
-        prompt1 = f"""You are a professional translator from {source_name} to Persian (Farsi).
+    prompt1 = f"""You are a professional translator from {source_name} to Persian (Farsi).
 Translate the following {source_name} subtitle lines to fluent, natural Persian.
 For Arabic religious phrases (salawat, du'a, etc.): translate their meaning to Persian.
 Return ONLY the Persian translations, one per line, numbered exactly as input.
 Keep technical terms in English when they are common.
-
-{numbered}"""
-    else:
-        prompt1 = f"""Translate the following English subtitle lines to Persian (Farsi).
-Return ONLY the Persian translations, one per line, numbered exactly as input.
-Keep technical terms (AI, API, YouTube, etc.) in English.
 
 {numbered}"""
 
@@ -160,10 +151,9 @@ Keep technical terms (AI, API, YouTube, etc.) in English.
     pass1 = parse_numbered_response(raw, len(batch))
     print(f"  ✅ Pass 1: {len(pass1)} translations")
 
-    # === PASS 2 (non-English only): Self-correction & polishing ===
-    if is_non_english:
-        pass1_numbered = "\n".join(f"{j+1}. {t}" for j, t in enumerate(pass1))
-        prompt2 = f"""You are a Persian language editor. Review and improve the following Persian translations.
+    # === PASS 2: Self-correction & polishing (all languages) ===
+    pass1_numbered = "\n".join(f"{j+1}. {t}" for j, t in enumerate(pass1))
+    prompt2 = f"""You are a Persian language editor. Review and improve the following Persian translations.
 
 First, check for these issues:
 1. Arabic phrases left untranslated → translate them to Persian
@@ -176,18 +166,16 @@ Do NOT change the meaning.
 
 {pass1_numbered}"""
 
-        try:
-            raw2 = call_deepseek(prompt2, max_tokens=2000, temperature=0.2)
-        except Exception as e:
-            print(f"  ⚠️ Self-correction failed, keeping pass 1: {e}")
-            translations.extend(pass1)
-            continue
-
-        pass2 = parse_numbered_response(raw2, len(batch))
-        print(f"  ✅ Pass 2: corrected {sum(1 for a,b in zip(pass1, pass2) if a != b)}/{len(pass2)} lines")
-        translations.extend(pass2)
-    else:
+    try:
+        raw2 = call_deepseek(prompt2, max_tokens=2000, temperature=0.2)
+    except Exception as e:
+        print(f"  ⚠️ Self-correction failed, keeping pass 1: {e}")
         translations.extend(pass1)
+        continue
+
+    pass2 = parse_numbered_response(raw2, len(batch))
+    print(f"  ✅ Pass 2: corrected {sum(1 for a,b in zip(pass1, pass2) if a != b)}/{len(pass2)} lines")
+    translations.extend(pass2)
 
 # --- Cleanup LiteLLM ---
 litellm_proc.terminate()
