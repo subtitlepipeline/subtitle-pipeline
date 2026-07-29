@@ -13,6 +13,15 @@ srt_file = sys.argv[2] if len(sys.argv) > 2 else "output/subtitle.srt"
 ass_file = sys.argv[3] if len(sys.argv) > 3 else "output/subtitle.ass"
 title = sys.argv[4] if len(sys.argv) > 4 else "subtitle"
 
+# Fix encoding: if title looks like mojibake, try to fix it
+try:
+    # If the title has replacement chars or looks wrong, try reading from title.txt
+    if '\\x' in repr(title) or '?' in title:
+        with open("output/title.txt", encoding="utf-8") as f:
+            title = f.read().strip()
+except:
+    pass
+
 gh_token = os.environ["GH_TOKEN"]
 
 # Sanitize title for filename (keep Unicode letters incl Arabic/Persian, remove special chars)
