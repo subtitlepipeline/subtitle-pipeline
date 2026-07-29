@@ -15,9 +15,14 @@ title = sys.argv[4] if len(sys.argv) > 4 else "subtitle"
 
 gh_token = os.environ["GH_TOKEN"]
 
-# Sanitize title for filename (remove special chars, keep English/alphanumeric/space/dash)
+# Sanitize title for filename (keep Unicode letters incl Arabic/Persian, remove special chars)
 import re
-safe_title = re.sub(r'[^\w\s.-]', '', title).strip().replace(' ', '_')
+# re.UNICODE flag makes \w match Arabic/Persian letters too
+safe_title = re.sub(r'[^\w\s.-]', '', title, flags=re.UNICODE).strip()
+# Replace multiple spaces/underscores with single underscore, remove leading/trailing dots
+safe_title = re.sub(r'[\s]+', '_', safe_title)
+safe_title = re.sub(r'[._]{2,}', '_', safe_title)
+safe_title = safe_title.strip('._')
 if not safe_title:
     safe_title = "subtitle"
 
