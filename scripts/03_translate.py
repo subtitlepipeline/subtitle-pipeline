@@ -87,8 +87,8 @@ else:
 from openai import OpenAI
 client = OpenAI(base_url="http://localhost:4000/v1", api_key="sk-anything")
 
-def call_deepseek(prompt, max_tokens=2000, temperature=0.3, retries=2):
-    """Call DeepSeek with retries on failure."""
+def call_deepseek(prompt, max_tokens=2000, temperature=0.3, retries=3, timeout=120):
+    """Call DeepSeek with retries and timeout on failure."""
     last_error = None
     for attempt in range(retries + 1):
         try:
@@ -96,7 +96,8 @@ def call_deepseek(prompt, max_tokens=2000, temperature=0.3, retries=2):
                 model="deepseek",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=max_tokens,
-                temperature=temperature
+                temperature=temperature,
+                timeout=timeout
             )
             content = response.choices[0].message.content or ""
             if content.strip():
@@ -121,7 +122,7 @@ def parse_numbered_response(content, expected_count):
     return result[:expected_count]
 
 # --- Translate in batches ---
-BATCH_SIZE = 20
+BATCH_SIZE = 40
 translations = []
 
 for i in range(0, len(texts), BATCH_SIZE):
