@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Step 3: Translate transcripts to Persian using DeepSeek via LiteLLM.
-Starts a local LiteLLM proxy with NVIDIA API keys, then translates in batches.
+- English→Persian: one-pass (fast)
+- Non-English→Persian (Arabic, Turkish, etc.): two-pass + self-correction (quality)
 """
 import sys, os, json, subprocess, time, re, http.client
 
@@ -16,8 +17,12 @@ segments = data["segments"]
 texts = [seg["text"] for seg in segments]
 
 # Detect source language from Whisper output
-source_lang = data.get("language", "auto")
+source_lang = data.get("language", "en")
 print(f"📝 {len(texts)} segments to translate (source: {source_lang})")
+
+# Only use two-pass for non-English
+is_non_english = source_lang not in ("en", "english", "")
+print(f"{'🔁 Two-pass + self-correction enabled' if is_non_english else '⚡ One-pass translation (English→Persian)'}")
 
 # --- Start LiteLLM proxy ---
 api_keys_str = os.environ.get("NVIDIA_API_KEYS", "")
@@ -32,24 +37,14 @@ print(f"🔑 Found {len(api_keys)} NVIDIA API keys")
 # Build LiteLLM config
 config = {"model_list": []}
 for i, key in enumerate(api_keys):
-    config["model_list"].extend([
-        {
-            "model_name": "deepseek",
-            "litellm_params": {
-                "model": "openai/deepseek-ai/deepseek-v4-flash",
-                "api_base": "https://integrate.api.nvidia.com/v1",
-                "api_key": key
-            }
-        },
-        {
-            "model_name": "glm",
-            "litellm_params": {
-                "model": "openai/z-ai/glm-5.2",
-                "api_base": "https://integrate.api.nvidia.com/v1",
-                "api_key": key
-            }
+    config["model_list"].append({
+        "model_name": "deepseek",
+        "litellm_params": {
+            "model": "openai/deepseek-ai/deepseek-v4-flash",
+            "api_base": "https://integrate.api.nvidia.com/v1",
+            "api_key": key
         }
-    ])
+    })
 config["router_settings"] = {"routing_strategy": "simple-shuffle"}
 config["litellm_settings"] = {"drop_params": True, "allowed_fails": 100, "cooldown_time": 1}
 
@@ -80,85 +75,119 @@ for attempt in range(60):
     time.sleep(2)
 else:
     print("❌ LiteLLM failed to start")
-    # Print logs
     litellm_proc.terminate()
     out, _ = litellm_proc.communicate(timeout=5)
     print(out.decode()[-2000:])
     sys.exit(1)
 
+from openai import OpenAI
+client = OpenAI(base_url="http://localhost:4000/v1", api_key="sk-anything")
+
+def call_deepseek(prompt, max_tokens=2000, temperature=0.3, retries=2):
+    """Call DeepSeek with retries on failure."""
+    last_error = None
+    for attempt in range(retries + 1):
+        try:
+            response = client.chat.completions.create(
+                model="deepseek",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=max_tokens,
+                temperature=temperature
+            )
+            content = response.choices[0].message.content or ""
+            if content.strip():
+                return content.strip()
+        except Exception as e:
+            last_error = e
+            if attempt < retries:
+                time.sleep(2)
+    raise last_error or Exception("DeepSeek failed after retries")
+
+def parse_numbered_response(content, expected_count):
+    """Parse numbered response lines into a list."""
+    lines = content.split("\n")
+    result = []
+    for line in lines:
+        cleaned = re.sub(r'^\d+\.\s*', '', line.strip())
+        if cleaned:
+            result.append(cleaned)
+    # Fix count mismatch
+    while len(result) < expected_count:
+        result.append(result[-1] if result else "")
+    return result[:expected_count]
+
+# --- Language name map ---
+lang_map = {"ar": "Arabic", "en": "English", "fa": "Persian", "tr": "Turkish",
+            "ur": "Urdu", "hi": "Hindi", "es": "Spanish", "fr": "French",
+            "de": "German", "ru": "Russian", "pt": "Portuguese", "id": "Indonesian"}
+source_name = lang_map.get(source_lang, source_lang)
+
 # --- Translate in batches ---
 BATCH_SIZE = 20
 translations = []
-
-from openai import OpenAI
-client = OpenAI(base_url="http://localhost:4000/v1", api_key="sk-anything")
 
 for i in range(0, len(texts), BATCH_SIZE):
     batch = texts[i:i + BATCH_SIZE]
     batch_num = i // BATCH_SIZE + 1
     total_batches = (len(texts) + BATCH_SIZE - 1) // BATCH_SIZE
-    print(f"🔄 Translating batch {batch_num}/{total_batches}...")
+    print(f"🔄 Batch {batch_num}/{total_batches}...")
 
     numbered = "\n".join(f"{j+1}. {t}" for j, t in enumerate(batch))
-    lang_name = {"ar": "Arabic", "en": "English", "fa": "Persian", "tr": "Turkish", "ur": "Urdu", "hi": "Hindi"}
-    source_name = lang_name.get(source_lang, source_lang)
-    prompt = f"""Translate the following {source_name} subtitle lines to Persian (Farsi). 
-Return ONLY the Persian translations, one per line, numbered exactly like the input.
-Keep technical terms (AI, API, YouTube, etc.) in English. Do NOT add any explanation.
-If there are Arabic religious phrases (like salawat, du'a), translate them to Persian too.
-Use natural, fluent Persian.
+
+    # === PASS 1: Translate ===
+    if is_non_english:
+        prompt1 = f"""You are a professional translator from {source_name} to Persian (Farsi).
+Translate the following {source_name} subtitle lines to fluent, natural Persian.
+For Arabic religious phrases (salawat, du'a, etc.): translate their meaning to Persian.
+Return ONLY the Persian translations, one per line, numbered exactly as input.
+Keep technical terms in English when they are common.
+
+{numbered}"""
+    else:
+        prompt1 = f"""Translate the following English subtitle lines to Persian (Farsi).
+Return ONLY the Persian translations, one per line, numbered exactly as input.
+Keep technical terms (AI, API, YouTube, etc.) in English.
 
 {numbered}"""
 
     try:
-        response = client.chat.completions.create(
-            model="deepseek",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=2000,
-            temperature=0.3
-        )
-        content = response.choices[0].message.content.strip()
-        
-        # Parse numbered lines
-        lines = content.split("\n")
-        batch_translations = []
-        for line in lines:
-            # Remove leading number and dot
-            cleaned = re.sub(r'^\d+\.\s*', '', line.strip())
-            if cleaned:
-                batch_translations.append(cleaned)
-        
-        # Ensure we have exactly BATCH_SIZE translations
-        while len(batch_translations) < len(batch):
-            batch_translations.append(batch_translations[-1] if batch_translations else "")
-        
-        translations.extend(batch_translations[:len(batch)])
-        print(f"  ✅ Got {len(batch_translations[:len(batch)])} translations")
-        
+        raw = call_deepseek(prompt1)
     except Exception as e:
-        print(f"  ❌ Error: {e}, using fallback to GLM")
+        print(f"  ❌ Translation failed: {e}")
+        translations.extend(batch)
+        continue
+
+    pass1 = parse_numbered_response(raw, len(batch))
+    print(f"  ✅ Pass 1: {len(pass1)} translations")
+
+    # === PASS 2 (non-English only): Self-correction & polishing ===
+    if is_non_english:
+        pass1_numbered = "\n".join(f"{j+1}. {t}" for j, t in enumerate(pass1))
+        prompt2 = f"""You are a Persian language editor. Review and improve the following Persian translations.
+
+First, check for these issues:
+1. Arabic phrases left untranslated → translate them to Persian
+2. Grammatical errors (wrong verb conjugations, pronoun mismatches)
+3. Unnatural or awkward phrasing → make it fluent Persian
+
+Then rewrite each line to be NATURAL, FLUENT Persian.
+Return ONLY the corrected Persian translations, one per line, numbered exactly as input.
+Do NOT change the meaning.
+
+{pass1_numbered}"""
+
         try:
-            response = client.chat.completions.create(
-                model="glm",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=2000,
-                temperature=0.3
-            )
-            content = response.choices[0].message.content.strip()
-            # Strip CJK that GLM injects
-            content = re.sub(r'[\u4e00-\u9fff]+', '', content)
-            lines = content.split("\n")
-            batch_translations = []
-            for line in lines:
-                cleaned = re.sub(r'^\d+\.\s*', '', line.strip())
-                if cleaned:
-                    batch_translations.append(cleaned)
-            while len(batch_translations) < len(batch):
-                batch_translations.append(batch_translations[-1] if batch_translations else "")
-            translations.extend(batch_translations[:len(batch)])
-        except Exception as e2:
-            print(f"  ❌ GLM also failed: {e2}")
-            translations.extend(batch)  # fallback to English
+            raw2 = call_deepseek(prompt2, max_tokens=2000, temperature=0.2)
+        except Exception as e:
+            print(f"  ⚠️ Self-correction failed, keeping pass 1: {e}")
+            translations.extend(pass1)
+            continue
+
+        pass2 = parse_numbered_response(raw2, len(batch))
+        print(f"  ✅ Pass 2: corrected {sum(1 for a,b in zip(pass1, pass2) if a != b)}/{len(pass2)} lines")
+        translations.extend(pass2)
+    else:
+        translations.extend(pass1)
 
 # --- Cleanup LiteLLM ---
 litellm_proc.terminate()
