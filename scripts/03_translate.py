@@ -100,10 +100,13 @@ for i in range(0, len(texts), BATCH_SIZE):
     print(f"🔄 Translating batch {batch_num}/{total_batches}...")
 
     numbered = "\n".join(f"{j+1}. {t}" for j, t in enumerate(batch))
-    lang_hint = f"from {source_lang}" if source_lang != "auto" else "from any language"
-    prompt = f"""Translate the following subtitle lines {lang_hint} to Persian (Farsi). 
+    lang_name = {"ar": "Arabic", "en": "English", "fa": "Persian", "tr": "Turkish", "ur": "Urdu", "hi": "Hindi"}
+    source_name = lang_name.get(source_lang, source_lang)
+    prompt = f"""Translate the following {source_name} subtitle lines to Persian (Farsi). 
 Return ONLY the Persian translations, one per line, numbered exactly like the input.
 Keep technical terms (AI, API, YouTube, etc.) in English. Do NOT add any explanation.
+If there are Arabic religious phrases (like salawat, du'a), translate them to Persian too.
+Use natural, fluent Persian.
 
 {numbered}"""
 
