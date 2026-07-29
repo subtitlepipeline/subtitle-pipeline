@@ -169,8 +169,11 @@ for i in range(0, len(texts), BATCH_SIZE):
     print(f"  ✅ Got {len(batch_translations)} translations")
 
 # --- Cleanup LiteLLM ---
-litellm_proc.terminate()
-litellm_proc.wait(timeout=10)
+litellm_proc.kill()
+try:
+    litellm_proc.wait(timeout=5)
+except:
+    pass
 
 # --- Save ---
 with open(output_path, "w", encoding="utf-8") as f:
