@@ -6,13 +6,16 @@ Build cinema-style ASS subtitle with:
 - Outline=6 (padding inside box)
 - MarginL/R=30 (padding from screen edges)
 - RTL via \u202B prefix (redundant — fribidi auto-detects, but kept for clarity)
-- Font size scales with resolution
+- Font size scales with resolution, clamped to 14-18
 
 Usage:
   python3 make_cinema_ass.py <input.srt> <output.ass> [fontsize]
 
-Default fontsize=16 (for 480p). For 1080p use 24, for 720p use 18-20.
-Rule of thumb: fontsize ≈ video_height * 0.022
+Font size rules:
+  480p → 14 (min)
+  720p → 16
+  1080p → 18 (max)
+  Formula: fontsize = clamp(round(video_height * 0.014), 14, 18)
 """
 import pysubs2
 import sys
@@ -20,6 +23,9 @@ import sys
 
 def make_ass(srt_path, ass_path, fontsize=16):
     subs = pysubs2.load(srt_path, encoding="utf-8")
+
+    # Clamp fontsize to 14-18 range
+    fontsize = max(14, min(18, fontsize))
 
     style = pysubs2.SSAStyle()
     style.fontname = "Vazirmatn"
@@ -50,7 +56,7 @@ def make_ass(srt_path, ass_path, fontsize=16):
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print("Usage: make_cinema_ass.py <input.srt> <output.ass> [fontsize]")
-        print("  fontsize: 16 for 480p (default), 24 for 1080p, 20 for 720p")
+        print("  fontsize: 14 for 480p, 16 for 720p, 18 for 1080p (auto-clamped 14-18)")
         sys.exit(1)
     fontsize = int(sys.argv[3]) if len(sys.argv) > 3 else 16
     make_ass(sys.argv[1], sys.argv[2], fontsize)
