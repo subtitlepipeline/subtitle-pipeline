@@ -34,9 +34,11 @@ jobs:
           VPS_IP: ${{ secrets.VPS_IP }}
         run: |
           mkdir -p output
-          curl -v -L "http://$VPS_IP:9999/video.mp4" -o output/video.mp4
+          curl -sL "http://$VPS_IP:9999/video.mp4" -o output/video.mp4
+          curl -sL "http://$VPS_IP:9999/title.txt" -o output/title.txt
           ls -lh output/video.mp4
-          file output/video.mp4
+          echo "Video title: $(cat output/title.txt)"
+          ffprobe -v error -show_entries stream=width,height -of csv=p=0 output/video.mp4
 
       - name: Whisper transcription (large-v3)
         run: |
@@ -61,13 +63,15 @@ jobs:
           FONTSIZE=$(python3 -c "print(round($VIDEO_HEIGHT * 0.014))")
           python3 scripts/make_cinema_ass.py output/subtitle.srt output/subtitle.ass $FONTSIZE
 
-      - name: Burn-in subtitles
+      - name: Burn-in subtitles (1080p + 720p + 480p)
         run: |
-          python3 scripts/05_burnin.py output/video.mp4 output/subtitle.ass output/final.mp4
+          VIDEO_TITLE=$(cat output/title.txt)
+          python3 scripts/05_burnin.py output/video.mp4 output/subtitle.ass "output/$VIDEO_TITLE"
 
       - name: Upload to GitHub Release
         run: |
-          python3 scripts/06_upload.py output/final.mp4 output/subtitle.srt output/subtitle.ass
+          VIDEO_TITLE=$(cat output/title.txt)
+          python3 scripts/06_upload.py "output/$VIDEO_TITLE" output/subtitle.srt output/subtitle.ass "$VIDEO_TITLE"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
