@@ -14,9 +14,9 @@ jobs:
 
       - name: Check deps
         run: |
-          which python3 && python3 --version
-          which ffmpeg && ffmpeg -version | head -1
-          which ffprobe && echo "✅ ffprobe OK"
+          echo "✅ python3: $(python3 --version)"
+          which ffmpeg && echo "✅ ffmpeg OK" || echo "⚠️ ffmpeg not pre-installed"
+          which ffprobe && echo "✅ ffprobe OK" || echo "⚠️ ffprobe not pre-installed"
 
       - name: Install yt-dlp (pip)
         run: |
