@@ -12,32 +12,44 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check deps
+      - name: Install Node.js (for JS runtime)
         run: |
-          echo "✅ python3: $(python3 --version)"
-          which ffmpeg && echo "✅ ffmpeg OK" || echo "⚠️ ffmpeg not pre-installed"
-          which ffprobe && echo "✅ ffprobe OK" || echo "⚠️ ffprobe not pre-installed"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nodejs npm 2>&1 | tail -3
+          node --version
+          npm --version
 
-      - name: Install yt-dlp (pip)
+      - name: Install yt-dlp
         run: |
           pip install yt-dlp --break-system-packages
           yt-dlp --version
 
-      - name: Test format listing
+      - name: Test with different client strategies
         run: |
-          echo "=== Test listing ==="
+          URL="https://www.youtube.com/watch?v=krNP8RlDsbw"
+          
+          echo "=== 1) android client ==="
           yt-dlp --no-playlist --print "title" --print "duration_string" \
-            "https://www.youtube.com/watch?v=krNP8RlDsbw" 2>&1
+            --extractor-args "youtube:player_client=android" \
+            "$URL" 2>&1
+          
+          echo ""
+          echo "=== 2) ios client ==="
+          yt-dlp --no-playlist --print "title" --print "duration_string" \
+            --extractor-args "youtube:player_client=ios" \
+            "$URL" 2>&1
 
-      - name: Test download 720p
+      - name: Test format list with android
+        run: |
+          yt-dlp --list-formats \
+            --extractor-args "youtube:player_client=android" \
+            "https://www.youtube.com/watch?v=krNP8RlDsbw" 2>&1 | head -20
+
+      - name: Test download with android
         run: |
           yt-dlp -f "bestvideo[height<=720]+bestaudio/best[height<=720]" \
             -o "/tmp/test_video.mp4" --merge-output-format mp4 \
             --no-playlist \
+            --extractor-args "youtube:player_client=android" \
             "https://www.youtube.com/watch?v=krNP8RlDsbw" 2>&1
-          ls -lh /tmp/test_video.mp4
-          ffprobe -v error -show_entries stream=width,height -of csv=p=0 /tmp/test_video.mp4
-
-      - name: List formats
-        run: |
-          yt-dlp --list-formats "https://www.youtube.com/watch?v=krNP8RlDsbw" 2>&1 | head -30
+          ls -lh /tmp/test_video.mp4 2>/dev/null || echo "❌ Download failed"
