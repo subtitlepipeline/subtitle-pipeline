@@ -27,7 +27,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install faster-whisper pysubs2 openai pyyaml requests
-          pip install 'litellm[proxy]'
+          pip install 'litellm[proxy]==1.44.0'
 
       - name: Download video from VPS
         env:
