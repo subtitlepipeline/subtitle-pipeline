@@ -57,7 +57,7 @@ with open(config_path, "w") as f:
 print("🚀 Starting LiteLLM proxy on port 4000...")
 litellm_proc = subprocess.Popen(
     ["litellm", "--config", config_path, "--host", "0.0.0.0", "--port", "4000"],
-    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    stdout=subprocess.PIPE, stderr=subprocess.STDOUT
 )
 
 # Wait for proxy to be ready
@@ -76,7 +76,13 @@ for attempt in range(60):
     time.sleep(2)
 else:
     print("❌ LiteLLM failed to start")
+    # Print LiteLLM logs for debugging
     litellm_proc.terminate()
+    try:
+        out = litellm_proc.stdout.read().decode('utf-8', errors='replace')
+        print(f"LiteLLM logs:\n{out[-2000:]}")
+    except:
+        pass
     sys.exit(1)
 
 from openai import OpenAI
