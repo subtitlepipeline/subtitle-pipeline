@@ -41,7 +41,7 @@ for i, key in enumerate(api_keys):
     config["model_list"].append({
         "model_name": "deepseek",
         "litellm_params": {
-            "model": "openai/deepseek-ai/deepseek-v4-flash",
+            "model": "openai/openai/gpt-oss-120b",
             "api_base": "https://integrate.api.nvidia.com/v1",
             "api_key": key
         }
