@@ -26,8 +26,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
-          pip install faster-whisper pysubs2 openai pyyaml requests
-          pip install 'litellm[proxy]==1.43.19'
+          pip install faster-whisper pysubs2 openai requests
 
       - name: Download video from VPS
         env:
@@ -44,9 +43,9 @@ jobs:
         run: |
           python3 scripts/02_whisper.py output/video.mp4 output/transcript.json
 
-      - name: Translate to Persian (DeepSeek via LiteLLM)
+      - name: Translate to Persian (DeepSeek via 9Router)
         env:
-          NVIDIA_API_KEYS: ${{ secrets.NVIDIA_API_KEYS }}
+          ROUTER_KEY: ${{ secrets.ROUTER_KEY }}
         run: |
           python3 scripts/03_translate.py output/transcript.json output/translated.json
 

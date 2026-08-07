@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Step 3: Translate transcripts to Persian using DeepSeek via LiteLLM.
+Step 3: Translate transcripts to Persian using DeepSeek via 9Router.
 One-pass with an enhanced, high-quality translation prompt.
 """
-import sys, os, json, subprocess, time, re
+import sys, os, json, time, re
 
 transcript_path = sys.argv[1]
 output_path = sys.argv[2]
@@ -23,78 +23,29 @@ lang_map = {"ar": "Arabic", "en": "English", "fa": "Persian", "tr": "Turkish",
 source_name = lang_map.get(source_lang, source_lang)
 
 print(f"📝 {len(texts)} segments to translate (source: {source_name})")
-print(f"⚡ Enhanced one-pass translation")
+print(f"⚡ Enhanced one-pass translation via 9Router")
 
-# --- Start LiteLLM proxy ---
-api_keys_str = os.environ.get("NVIDIA_API_KEYS", "")
-api_keys = [k.strip() for k in api_keys_str.split(",") if k.strip()]
+# --- 9Router API config ---
+ROUTER_BASE = os.environ.get("ROUTER_BASE", "http://95.182.92.43:20128/v1")
+ROUTER_KEY = os.environ.get("ROUTER_KEY", "")
+ROUTER_MODEL = os.environ.get("ROUTER_MODEL", "oc/deepseek-v4-flash-free")
 
-if not api_keys:
-    print("❌ No NVIDIA_API_KEYS found")
+if not ROUTER_KEY:
+    print("❌ No ROUTER_KEY found")
     sys.exit(1)
 
-print(f"🔑 Found {len(api_keys)} NVIDIA API keys")
-
-# Build LiteLLM config
-config = {"model_list": []}
-for i, key in enumerate(api_keys):
-    config["model_list"].append({
-        "model_name": "deepseek",
-        "litellm_params": {
-            "model": "openai/deepseek-ai/deepseek-v4-flash",
-            "api_base": "https://integrate.api.nvidia.com/v1",
-            "api_key": key
-        }
-    })
-config["router_settings"] = {"routing_strategy": "simple-shuffle"}
-config["litellm_settings"] = {"drop_params": True, "allowed_fails": 100, "cooldown_time": 1}
-
-config_path = "/tmp/litellm_config.yaml"
-import yaml
-with open(config_path, "w") as f:
-    yaml.dump(config, f)
-
-print("🚀 Starting LiteLLM proxy on port 4000...")
-litellm_proc = subprocess.Popen(
-    ["litellm", "--config", config_path, "--host", "0.0.0.0", "--port", "4000"],
-    stdout=subprocess.PIPE, stderr=subprocess.STDOUT
-)
-
-# Wait for proxy to be ready
-print("⏳ Waiting for LiteLLM to start...")
-for attempt in range(60):
-    try:
-        import requests
-        r = requests.post("http://localhost:4000/v1/chat/completions",
-            json={"model": "deepseek", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 5},
-            timeout=10)
-        if r.status_code in (200, 400):
-            print("✅ LiteLLM is ready!")
-            break
-    except:
-        pass
-    time.sleep(2)
-else:
-    print("❌ LiteLLM failed to start")
-    # Print LiteLLM logs for debugging
-    litellm_proc.terminate()
-    try:
-        out = litellm_proc.stdout.read().decode('utf-8', errors='replace')
-        print(f"LiteLLM logs:\n{out[-2000:]}")
-    except:
-        pass
-    sys.exit(1)
+print(f"🔑 Using 9Router: {ROUTER_BASE} model={ROUTER_MODEL}")
 
 from openai import OpenAI
-client = OpenAI(base_url="http://localhost:4000/v1", api_key="sk-anything")
+client = OpenAI(base_url=ROUTER_BASE, api_key=ROUTER_KEY)
 
 def call_deepseek(prompt, max_tokens=3000, temperature=0.3, retries=3, timeout=120):
-    """Call DeepSeek with retries and timeout."""
+    """Call DeepSeek via 9Router with retries and timeout."""
     last_error = None
     for attempt in range(retries + 1):
         try:
             response = client.chat.completions.create(
-                model="deepseek",
+                model=ROUTER_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=max_tokens,
                 temperature=temperature,
@@ -123,10 +74,6 @@ def parse_numbered_response(content, expected_count):
     return result[:expected_count]
 
 # --- Enhanced translation prompt ---
-# This prompt is carefully designed to produce fluent, natural Persian
-# translations in a single pass, covering all the quality requirements
-# that were previously handled by the two-pass approach.
-
 def build_prompt(source_name, numbered):
     return f"""You are an expert literary translator specializing in {source_name}→Persian (Farsi) translation.
 
@@ -173,13 +120,6 @@ for i in range(0, len(texts), BATCH_SIZE):
     batch_translations = parse_numbered_response(raw, len(batch))
     translations.extend(batch_translations)
     print(f"  ✅ Got {len(batch_translations)} translations")
-
-# --- Cleanup LiteLLM ---
-litellm_proc.kill()
-try:
-    litellm_proc.wait(timeout=5)
-except:
-    pass
 
 # --- Save ---
 with open(output_path, "w", encoding="utf-8") as f:
