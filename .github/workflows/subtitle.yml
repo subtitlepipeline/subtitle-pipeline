@@ -86,12 +86,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Delete releases older than 48 hours
+      - name: Delete releases older than 7 days
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Current time minus 48 hours
-          CUTOFF=$(date -u -d "48 hours ago" +%Y-%m-%dT%H:%M:%SZ)
+          # Current time minus 7 days
+          CUTOFF=$(date -u -d "7 days ago" +%Y-%m-%dT%H:%M:%SZ)
           echo "Deleting releases older than: $CUTOFF"
           
           # List all releases with timestamps
