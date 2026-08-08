@@ -26,8 +26,9 @@ jobs:
           BASE_PORT=21001
           echo "🎯 Preparing $NUM 9Router instances..."
           
-          # Find 9router paths
-          ROUTER_DIR=$(node -e "console.log(require.resolve('9router/package.json').replace('/package.json',''))")
+          # Find 9router paths (global npm)
+          GLOBAL_NM=$(npm root -g)
+          ROUTER_DIR="$GLOBAL_NM/9router"
           APP_DIR="$ROUTER_DIR/app"
           SERVER="$APP_DIR/server.js"
           BUNDLED_NM="$APP_DIR/node_modules"
