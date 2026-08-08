@@ -48,54 +48,26 @@ from openai import OpenAI
 # ============ PROMPTS ============
 
 def build_translate_prompt(source_name, numbered):
-    return f"""You are a master translator specializing in {source_name}→Persian (Farsi) translation.
-
-Translate each subtitle line below into accurate, natural Persian.
-
-Rules:
-1. Translate the MEANING faithfully — do not add, remove, or change meaning.
-2. Use correct grammar: match subjects with verbs (singular/plural).
-3. Keep ALL technical terms, names, and proper nouns in original form (AI, API, YouTube, Claude, Hermes, etc.).
-4. For Arabic religious phrases, translate their full meaning naturally:
-   - "صلی الله علیه وسلم" → "درود خدا بر او باد"
-   - "رضی الله عنها" → "خدا از او راضی باشد"
-   - "سبحانه و تعالی" → "منزه و برتر است"
-5. Keep translations concise — match roughly the length of the source line.
-6. Maintain context flow between consecutive lines.
-
-Return ONLY the Persian translations, one per line, numbered exactly like the input.
-Do NOT add any explanation, notes, or commentary.
+    return f"""Translate each English subtitle line to Persian (Farsi). 
+Output ONLY the Persian translations, numbered. No thinking, no explanation.
 
 {numbered}"""
 
 def build_refine_prompt(numbered_pairs):
-    """Build refinement prompt — receives English+Persian pairs, returns polished Persian."""
-    return f"""You are an elite Persian literary editor and proofreader.
-
-Below are subtitle lines with their original English source and an initial Persian translation.
-Your task: Refine each Persian translation to the HIGHEST literary quality.
-
-Refinement rules — follow STRICTLY:
-1. REWRITE each line into the most elegant, fluent, polished Persian possible.
-2. Use the kind of Persian found in quality audiobooks, professional dubbing, and literary translations.
-3. Fix any grammar errors, awkward phrasing, or unnatural word choices.
-4. Ensure perfect verb-subject agreement (یک/چند).
-5. Use sophisticated but accessible vocabulary — not overly archaic, not colloquial.
-6. Maintain EXACT meaning — do NOT add, remove, or alter the content.
-7. The refined line must match the ORIGINAL English in meaning 100%.
-8. Keep translations concise — suitable for subtitles (readable in the time shown on screen).
-9. Keep ALL technical terms, names, and proper nouns in original form.
-10. Ensure smooth flow between consecutive lines.
-
-Return ONLY the refined Persian translations, one per line, numbered exactly like the input.
-Do NOT include the English. Do NOT add any explanation or commentary.
+    """Build refinement prompt — Persian-only prompt to avoid reasoning loop."""
+    return f"""بازنویسی کن: هر خط فارسی زیر را به بهترین و روان‌ترین ادبیات فارسی بازنویسی کن.
+معنی نباید عوض شود. فقط فارسی، شماره‌گذاری شده.
 
 {numbered_pairs}"""
 
 # ============ API CALL ============
 
-def call_router(port, key, prompt, max_tokens=4000, temperature=0.2, retries=3, timeout=180):
-    """Call a 9Router instance with retries."""
+def call_router(port, key, prompt, max_tokens=8000, temperature=0.2, retries=3, timeout=180):
+    """Call a 9Router instance with retries.
+    
+    DeepSeek free model often puts the actual answer in reasoning_content
+    and leaves content empty. We check both and extract the Persian text.
+    """
     client = OpenAI(base_url=f"http://127.0.0.1:{port}/v1", api_key=key)
     last_error = None
     for attempt in range(retries + 1):
@@ -108,19 +80,57 @@ def call_router(port, key, prompt, max_tokens=4000, temperature=0.2, retries=3, 
                 timeout=timeout
             )
             content = response.choices[0].message.content or ""
-            if not content and hasattr(response.choices[0].message, 'reasoning_content'):
-                content = response.choices[0].message.reasoning_content or ""
+            reasoning = getattr(response.choices[0].message, 'reasoning_content', '') or ""
+            finish_reason = response.choices[0].finish_reason
+            
+            # If content is empty but reasoning has Persian, extract from reasoning
+            if not content.strip() and reasoning.strip():
+                content = extract_persian_from_reasoning(reasoning)
+            
             if content.strip():
-                # Clean up reasoning artifacts if present
-                content = re.sub(r'^\s*', '', content, flags=re.DOTALL)
-                content = re.sub(r'^.*?\s*', '', content, flags=re.DOTALL)
-                if content.strip():
-                    return content.strip()
+                return content.strip()
+            
+            # If finish_reason is length, the response was truncated
+            if finish_reason == "length":
+                print(f"  ⚠️ Response truncated (finish_reason=length), trying larger max_tokens")
         except Exception as e:
             last_error = e
+            print(f"  ⚠️ Attempt {attempt+1}/{retries+1} failed: {e}")
             if attempt < retries:
                 time.sleep(5)
     raise last_error or Exception(f"Router on port {port} failed after retries")
+
+def extract_persian_from_reasoning(reasoning):
+    """Extract Persian translations from reasoning_content.
+    The model often thinks in English first, then outputs Persian lines.
+    We find lines that start with numbers and contain Persian text.
+    """
+    lines = reasoning.split("\n")
+    persian_lines = []
+    found_numbered = False
+    for line in lines:
+        # Look for numbered lines: "1. <persian text>"
+        m = re.match(r'^\d+\.\s*(.+)', line.strip())
+        if m:
+            text = m.group(1).strip()
+            # Check if it contains Persian characters
+            if re.search(r'[\u0600-\u06FF]', text):
+                persian_lines.append(text)
+                found_numbered = True
+                continue
+        # If we found numbered Persian lines and hit a non-numbered line, stop
+        if found_numbered and line.strip() and not re.match(r'^\d+\.', line.strip()):
+            break
+    
+    if persian_lines:
+        return "\n".join(f"{i+1}. {t}" for i, t in enumerate(persian_lines))
+    
+    # Fallback: just return any lines with Persian characters
+    all_persian = [l.strip() for l in lines if re.search(r'[\u0600-\u06FF]', l.strip())]
+    if all_persian:
+        return "\n".join(f"{i+1}. {t}" for i, t in enumerate(all_persian))
+    
+    return ""
 
 def parse_numbered_response(content, expected_count):
     """Parse numbered response lines into a list."""
@@ -137,6 +147,7 @@ def parse_numbered_response(content, expected_count):
 # ============ CHUNKING ============
 
 BATCH_SIZE = 40
+REFINE_BATCH_SIZE = 20  # Smaller chunks for refinement to avoid token limit
 CONTEXT_LINES = 3  # More context for better coherence
 
 chunks = []
@@ -226,20 +237,28 @@ print(f"📊 PASS 1: {translated_count}/{len(raw_translations)} segments transla
 
 # ============ PASS 2: REFINE ============
 
+# Create smaller chunks for refinement (20 per chunk)
+refine_chunks = []
+for i in range(0, len(raw_translations), REFINE_BATCH_SIZE):
+    refine_chunks.append({
+        "start_idx": i,
+        "translations": raw_translations[i:i + REFINE_BATCH_SIZE],
+        "num": i // REFINE_BATCH_SIZE + 1
+    })
+
 def refine_chunk(args):
     """PASS 2: Refine Persian translations to literary quality."""
     chunk, router = args
     chunk_num = chunk["num"]
     start_idx = chunk["start_idx"]
-    chunk_texts = chunk["texts"]  # English originals
-    chunk_translations = raw_translations[start_idx:start_idx + len(chunk_texts)]  # Persian
+    chunk_translations = chunk["translations"]  # Persian text to refine
     port = router["port"]
     key = router["key"]
 
-    # Build pairs: "1. EN: <english> | FA: <persian>"
+    # Build prompt: just the Persian translations, numbered
     pairs_text = []
-    for j, (en, fa) in enumerate(zip(chunk_texts, chunk_translations)):
-        pairs_text.append(f"{j+1}. EN: {en} | FA: {fa}")
+    for j, fa in enumerate(chunk_translations):
+        pairs_text.append(f"{j+1}. {fa}")
 
     numbered_pairs = "\n".join(pairs_text)
     prompt = build_refine_prompt(numbered_pairs)
@@ -254,7 +273,8 @@ def refine_chunk(args):
         return (chunk_num, start_idx, chunk_translations, str(e))
 
 # --- PASS 2: Refine ---
-refine_pairs = [(chunk, routers[i % len(routers)]) for i, chunk in enumerate(chunks)]
+refine_pairs = [(chunk, routers[i % len(routers)]) for i, chunk in enumerate(refine_chunks)]
+print(f"\n📦 PASS 2: {len(refine_chunks)} refine chunks of ~{REFINE_BATCH_SIZE} segments each")
 pass2_results = run_parallel_pass("PASS 2 (Refine)", num_routers, refine_chunk, refine_pairs)
 
 # Merge pass 2 results
