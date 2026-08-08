@@ -14,23 +14,30 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
       - name: Install 9Router
         run: |
           npm install -g 9router@0.5.40 2>&1 | tail -5
-          echo "9Router installed: $(9router --version 2>/dev/null || echo 'unknown')"
 
       - name: Prepare instances
         env:
           NUM: ${{ github.event.inputs.num_instances }}
         run: |
           NUM=${NUM:-5}
-          echo "🎯 Preparing $NUM 9Router instances..."
           BASE_PORT=21001
+          echo "🎯 Preparing $NUM 9Router instances..."
+          
+          # Find 9router paths
+          ROUTER_DIR=$(node -e "console.log(require.resolve('9router/package.json').replace('/package.json',''))")
+          APP_DIR="$ROUTER_DIR/app"
+          SERVER="$APP_DIR/server.js"
+          BUNDLED_NM="$APP_DIR/node_modules"
+          echo "9router dir: $ROUTER_DIR"
+          echo "server: $SERVER"
+          ls -la "$SERVER"
+          
+          # Save paths for later steps
+          echo "$ROUTER_DIR" > /tmp/router_dir.txt
+          echo "$BUNDLED_NM" > /tmp/bundled_nm.txt
           
           cat > /tmp/seed_db.py << 'PYEOF'
           import sqlite3, json, uuid, sys, os
@@ -82,45 +89,58 @@ jobs:
           echo "📋 All $NUM instances prepared"
           cat /tmp/router_keys.txt
 
-      - name: Start instances and check RAM
+      - name: Start instances (bypass killAll)
         env:
           NUM: ${{ github.event.inputs.num_instances }}
         run: |
           NUM=${NUM:-5}
           BASE_PORT=21001
-          echo "🚀 Starting $NUM instances (sequential start, then verify all)..."
+          ROUTER_DIR=$(cat /tmp/router_dir.txt)
+          BUNDLED_NM=$(cat /tmp/bundled_nm.txt)
+          SERVER="$ROUTER_DIR/app/server.js"
+          
+          echo "🚀 Starting $NUM instances (direct server.js, no CLI killAll)..."
           
           for i in $(seq 1 $NUM); do
             PORT=$((BASE_PORT + i - 1))
             DATADIR="/tmp/router-$i"
-            HOME="$DATADIR" 9router --port $PORT --no-browser --skip-update > "/tmp/router-$i.log" 2>&1 &
+            RUNTIME_NM="$DATADIR/.9router/runtime/node_modules"
+            
+            # Build NODE_PATH: runtime + bundled + system
+            NODE_PATH="$RUNTIME_NM:$BUNDLED_NM:$NODE_PATH"
+            
+            # Run server.js directly — no cli.js, no killAllAppProcesses
+            HOME="$DATADIR" \
+            NODE_PATH="$NODE_PATH" \
+            PORT=$PORT \
+            HOSTNAME=127.0.0.1 \
+            node --dns-result-order=ipv4first --max-old-space-size=512 "$SERVER" \
+              > "/tmp/router-$i.log" 2>&1 &
             echo "Started instance $i on port $PORT (pid $!)"
           done
           
           # Wait for all to be ready
-          echo "Waiting for instances to be ready..."
-          sleep 15
+          echo "Waiting 20s for instances to start..."
+          sleep 20
           
           # Check which are ready
           READY=0
           for i in $(seq 1 $NUM); do
             PORT=$((BASE_PORT + i - 1))
-            if curl -s -m 3 http://127.0.0.1:$PORT/v1/models > /dev/null 2>&1; then
+            if curl -s -m 5 http://127.0.0.1:$PORT/v1/models > /dev/null 2>&1; then
               READY=$((READY + 1))
               echo "  ✅ Instance $i ready on port $PORT"
             else
               echo "  ❌ Instance $i NOT ready on port $PORT"
+              echo "  --- Log tail ---"
+              tail -5 "/tmp/router-$i.log" 2>/dev/null
             fi
           done
           echo "Ready: $READY / $NUM"
-          
-          # Show RAM usage
-          echo "=== RAM usage ==="
+          echo "=== RAM ==="
           free -m | head -3
-          echo "=== Process count ==="
-          ps aux | grep -c '[9]router\|[n]ext-server'
-          echo "=== Top processes by RAM ==="
-          ps aux --sort=-%mem | head -10
+          echo "=== 9router processes ==="
+          ps aux | grep '[s]erver.js' | wc -l
 
       - name: Test all instances
         env:
@@ -154,6 +174,7 @@ jobs:
             KEY=$(grep "^${i}|" /tmp/router_keys.txt | cut -d'|' -f3)
             
             echo "--- Instance $i (port $PORT) ---"
+            echo "  KEY: ${KEY:0:20}..."
             
             RESPONSE=$(curl -s -m 30 http://127.0.0.1:$PORT/v1/chat/completions \
               -H "Content-Type: application/json" \
