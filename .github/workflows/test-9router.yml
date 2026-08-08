@@ -32,26 +32,21 @@ jobs:
           echo "🎯 Starting $NUM 9Router instances..."
           
           BASE_PORT=21000
-          TEST_QUESTION="What is 2+2? Reply with only the number."
-          EXPECTED="4"
           
-          # Create data dirs and pre-seed each with a unique API key
-          for i in $(seq 1 $NUM); do
-            PORT=$((BASE_PORT + i - 1))
-            DATADIR="/tmp/router-$i"
-            mkdir -p "$DATADIR/.9router/db"
-            
-            # Generate a unique API key for this instance
-            APIKEY="sk-test-$(openssl rand -hex 12)"
-            
-            # Create minimal SQLite DB with combo + apiKey + customModels
-            python3 -c "
-          import sqlite3, json, uuid, os
-          db_path = '$DATADIR/.9router/db/data.sqlite'
+          # Create a Python script to seed DBs (avoids shell var interpolation issues)
+          cat > /tmp/seed_db.py << 'PYEOF'
+          import sqlite3, json, uuid, sys, os
+
+          instance_num = int(sys.argv[1])
+          datadir = sys.argv[2]
+          apikey = sys.argv[3]
+
+          db_path = os.path.join(datadir, '.9router', 'db', 'data.sqlite')
+          os.makedirs(os.path.dirname(db_path), exist_ok=True)
+
           conn = sqlite3.connect(db_path)
           c = conn.cursor()
-          
-          # Schema (matching 9Router v0.5.40)
+
           c.executescript('''
           CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT);
           CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY, data TEXT);
@@ -65,33 +60,38 @@ jobs:
           CREATE TABLE IF NOT EXISTS usageDaily (dateKey TEXT PRIMARY KEY, data TEXT);
           CREATE TABLE IF NOT EXISTS requestDetails (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, provider TEXT, model TEXT, connectionId TEXT, status TEXT, data TEXT);
           ''')
-          
-          # Insert combo with deepseek
+
           combo_id = str(uuid.uuid4())
           c.execute('INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)',
                     (combo_id, '9Router', None, json.dumps(['oc/deepseek-v4-flash-free', 'mmf/mimo-auto']), '2026-08-08T00:00:00.000Z', '2026-08-08T00:00:00.000Z'))
-          
-          # Insert API key
+
           key_id = str(uuid.uuid4())
           c.execute('INSERT INTO apiKeys (id, key, name, machineId, isActive, createdAt) VALUES (?, ?, ?, ?, ?, ?)',
-                    (key_id, '$APIKEY', 'test-instance-' + str($i), None, 1, '2026-08-08T00:00:00.000Z'))
-          
-          # Insert custom models
+                    (key_id, apikey, 'test-instance-' + str(instance_num), None, 1, '2026-08-08T00:00:00.000Z'))
+
           for model_id in ['deepseek-v4-flash-free', 'mimo-v2.5-free', 'longcat-2.0-free']:
-            kv_key = 'oc|' + model_id + '|llm'
-            kv_val = json.dumps({'providerAlias': 'oc', 'id': model_id, 'type': 'llm', 'name': model_id})
-            c.execute('INSERT OR REPLACE INTO kv (scope, key, value) VALUES (?, ?, ?)', ('customModels', kv_key, kv_val))
-          
-          # Meta
+              kv_key = 'oc|' + model_id + '|llm'
+              kv_val = json.dumps({'providerAlias': 'oc', 'id': model_id, 'type': 'llm', 'name': model_id})
+              c.execute('INSERT OR REPLACE INTO kv (scope, key, value) VALUES (?, ?, ?)', ('customModels', kv_key, kv_val))
+
           c.execute('INSERT OR REPLACE INTO _meta (key, value) VALUES (?, ?)', ('schemaVersion', '1'))
           c.execute('INSERT OR REPLACE INTO _meta (key, value) VALUES (?, ?)', ('backupSchemaVersion', '1'))
-          
+
           conn.commit()
           conn.close()
-          print(f'✅ Instance $i DB created at {db_path} with key {APIKEY[:15]}...')
-          "
+          print(f'✅ Instance {instance_num} DB created with key {apikey[:15]}...')
+          PYEOF
+          
+          # Seed all instances
+          > /tmp/router_keys.txt
+          for i in $(seq 1 $NUM); do
+            PORT=$((BASE_PORT + i - 1))
+            DATADIR="/tmp/router-$i"
+            APIKEY="sk-test-$(openssl rand -hex 12)"
             
-            # Save key for later
+            mkdir -p "$DATADIR/.9router/db"
+            python3 /tmp/seed_db.py "$i" "$DATADIR" "$APIKEY"
+            
             echo "$PORT|$APIKEY" >> /tmp/router_keys.txt
           done
           
@@ -114,10 +114,10 @@ jobs:
             PID=$!
             echo "Instance $i: port=$PORT pid=$PID"
             
-            # Wait for this instance to be ready (max 15s)
-            for j in $(seq 1 30); do
+            # Wait for this instance to be ready (max 30s)
+            for j in $(seq 1 60); do
               if curl -s -m 1 http://127.0.0.1:$PORT/v1/models > /dev/null 2>&1; then
-                echo "  ✅ Instance $i ready on port $PORT (${j}s)"
+                echo "  ✅ Instance $i ready on port $PORT"
                 break
               fi
               sleep 0.5
@@ -126,7 +126,6 @@ jobs:
           
           echo ""
           echo "=== All instances started ==="
-          # Show how many are responding
           READY=0
           for i in $(seq 1 $NUM); do
             PORT=$((21000 + i - 1))
@@ -150,6 +149,19 @@ jobs:
           FAIL=0
           RESULTS=""
           
+          cat > /tmp/parse_response.py << 'PYEOF'
+          import sys, json
+          try:
+              d = json.load(sys.stdin)
+              if 'error' in d:
+                  print('ERROR: ' + d['error'].get('message', 'unknown'))
+              else:
+                  c = d['choices'][0]['message']['content']
+                  print(c.strip())
+          except Exception as e:
+              print('PARSE_ERROR: ' + str(e))
+          PYEOF
+          
           for i in $(seq 1 $NUM); do
             PORT=$((21000 + i - 1))
             KEY=$(grep "^$PORT|" /tmp/router_keys.txt | cut -d'|' -f2)
@@ -161,31 +173,16 @@ jobs:
               -H "Authorization: Bearer $KEY" \
               -d "{\"model\":\"oc/deepseek-v4-flash-free\",\"messages\":[{\"role\":\"user\",\"content\":\"$TEST_QUESTION\"}],\"max_tokens\":50}" 2>&1)
             
-            # Extract content from response
-            CONTENT=$(echo "$RESPONSE" | python3 -c "
-          import sys, json
-          try:
-              d = json.load(sys.stdin)
-              c = d['choices'][0]['message']['content']
-              print(c.strip())
-          except:
-              print('ERROR: ' + sys.stdin.read()[:200])
-          " 2>&1)
+            CONTENT=$(echo "$RESPONSE" | python3 /tmp/parse_response.py 2>&1)
             
-            # Check for errors
-            if echo "$RESPONSE" | grep -q '"error"'; then
-              ERROR_MSG=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('error',{}).get('message','unknown'))" 2>/dev/null)
-              echo "  ❌ FAIL: $ERROR_MSG"
-              FAIL=$((FAIL + 1))
-              RESULTS="$RESULTS\nInstance $i (port $PORT): ❌ FAIL - $ERROR_MSG"
-            elif echo "$CONTENT" | grep -qi "error"; then
+            if echo "$CONTENT" | grep -qi "error"; then
               echo "  ❌ FAIL: $CONTENT"
               FAIL=$((FAIL + 1))
-              RESULTS="$RESULTS\nInstance $i (port $PORT): ❌ FAIL - $CONTENT"
+              RESULTS="${RESULTS}\nInstance ${i} (port ${PORT}): ❌ FAIL - ${CONTENT}"
             else
               echo "  ✅ Response: $CONTENT"
               PASS=$((PASS + 1))
-              RESULTS="$RESULTS\nInstance $i (port $PORT): ✅ OK - $CONTENT"
+              RESULTS="${RESULTS}\nInstance ${i} (port ${PORT}): ✅ OK - ${CONTENT}"
             fi
           done
           
@@ -195,11 +192,11 @@ jobs:
           echo "============================================"
           echo -e "$RESULTS"
           
-          # Save results for artifact
           echo -e "$RESULTS" > /tmp/test_results.txt
           echo "$PASS/$NUM" > /tmp/test_summary.txt
 
       - name: Upload results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: 9router-test-results
