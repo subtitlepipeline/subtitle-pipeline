@@ -52,6 +52,8 @@ def call_deepseek(prompt, max_tokens=3000, temperature=0.3, retries=3, timeout=1
                 timeout=timeout
             )
             content = response.choices[0].message.content or ""
+            if not content and hasattr(response.choices[0].message, 'reasoning_content'):
+                content = response.choices[0].message.reasoning_content or ""
             if content.strip():
                 return content.strip()
         except Exception as e:
