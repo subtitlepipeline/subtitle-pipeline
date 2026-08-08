@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Step 2: Whisper transcription with automatic model selection.
-- English audio → base model (74MB, fast)
+- English audio → small model (244MB, better quality, still fast)
 - Non-English audio → large-v3 (best quality)
 """
 import sys, os, json
@@ -19,8 +19,8 @@ print(f"🌐 Detected language: {lang}")
 
 # Choose model based on language
 if lang == "en":
-    model_name = "base"
-    print(f"🎤 English detected → using '{model_name}' model (74MB, fast)")
+    model_name = "small"
+    print(f"🎤 English detected → using '{model_name}' model (244MB, good quality + fast)")
 else:
     model_name = "large-v3"
     print(f"🎤 Non-English ({lang}) → using '{model_name}' model (best quality)")
