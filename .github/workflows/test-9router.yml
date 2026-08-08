@@ -162,9 +162,19 @@ jobs:
               if 'error' in d:
                   print('ERROR: ' + d['error'].get('message', str(d['error'])[:200]))
               else:
-                  print(d['choices'][0]['message']['content'].strip())
+                  msg = d['choices'][0]['message']
+                  content = msg.get('content') or ''
+                  if not content and msg.get('reasoning_content'):
+                      content = msg['reasoning_content']
+                  print(content.strip() if content else 'EMPTY')
           except Exception as e:
-              print('PARSE_ERROR: ' + raw[:200])
+              # Try to extract content even from truncated JSON
+              import re
+              m = re.search(r'"content"\s*:\s*"([^"]+)"', raw)
+              if m:
+                  print(m.group(1))
+              else:
+                  print('PARSE_ERROR: ' + raw[:300])
           PYEOF
           
           PASS=0
