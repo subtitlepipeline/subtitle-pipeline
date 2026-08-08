@@ -1,13 +1,13 @@
-name: Test 20x 9Router Instances
+name: Test Nx 9Router Instances
 
 on:
   workflow_dispatch:
     inputs:
       num_instances:
-        description: 'Number of 9Router instances (default 20)'
+        description: 'Number of 9Router instances (default 5)'
         required: false
         type: string
-        default: '20'
+        default: '5'
 
 jobs:
   test-routers:
@@ -24,29 +24,23 @@ jobs:
           npm install -g 9router@0.5.40 2>&1 | tail -5
           echo "9Router installed: $(9router --version 2>/dev/null || echo 'unknown')"
 
-      - name: Prepare 20 instances
+      - name: Prepare instances
         env:
           NUM: ${{ github.event.inputs.num_instances }}
         run: |
-          NUM=${NUM:-20}
-          echo "🎯 Starting $NUM 9Router instances..."
+          NUM=${NUM:-5}
+          echo "🎯 Preparing $NUM 9Router instances..."
+          BASE_PORT=21001
           
-          BASE_PORT=21000
-          
-          # Create a Python script to seed DBs (avoids shell var interpolation issues)
           cat > /tmp/seed_db.py << 'PYEOF'
           import sqlite3, json, uuid, sys, os
-
           instance_num = int(sys.argv[1])
           datadir = sys.argv[2]
           apikey = sys.argv[3]
-
           db_path = os.path.join(datadir, '.9router', 'db', 'data.sqlite')
           os.makedirs(os.path.dirname(db_path), exist_ok=True)
-
           conn = sqlite3.connect(db_path)
           c = conn.cursor()
-
           c.executescript('''
           CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT);
           CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY, data TEXT);
@@ -60,111 +54,104 @@ jobs:
           CREATE TABLE IF NOT EXISTS usageDaily (dateKey TEXT PRIMARY KEY, data TEXT);
           CREATE TABLE IF NOT EXISTS requestDetails (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, provider TEXT, model TEXT, connectionId TEXT, status TEXT, data TEXT);
           ''')
-
           combo_id = str(uuid.uuid4())
           c.execute('INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)',
-                    (combo_id, '9Router', None, json.dumps(['oc/deepseek-v4-flash-free', 'mmf/mimo-auto']), '2026-08-08T00:00:00.000Z', '2026-08-08T00:00:00.000Z'))
-
+                    (combo_id, '9Router', None, json.dumps(['oc/deepseek-v4-flash-free']), '2026-08-08T00:00:00.000Z', '2026-08-08T00:00:00.000Z'))
           key_id = str(uuid.uuid4())
           c.execute('INSERT INTO apiKeys (id, key, name, machineId, isActive, createdAt) VALUES (?, ?, ?, ?, ?, ?)',
-                    (key_id, apikey, 'test-instance-' + str(instance_num), None, 1, '2026-08-08T00:00:00.000Z'))
-
+                    (key_id, apikey, 'test-' + str(instance_num), None, 1, '2026-08-08T00:00:00.000Z'))
           for model_id in ['deepseek-v4-flash-free', 'mimo-v2.5-free', 'longcat-2.0-free']:
               kv_key = 'oc|' + model_id + '|llm'
               kv_val = json.dumps({'providerAlias': 'oc', 'id': model_id, 'type': 'llm', 'name': model_id})
               c.execute('INSERT OR REPLACE INTO kv (scope, key, value) VALUES (?, ?, ?)', ('customModels', kv_key, kv_val))
-
           c.execute('INSERT OR REPLACE INTO _meta (key, value) VALUES (?, ?)', ('schemaVersion', '1'))
           c.execute('INSERT OR REPLACE INTO _meta (key, value) VALUES (?, ?)', ('backupSchemaVersion', '1'))
-
           conn.commit()
           conn.close()
-          print(f'✅ Instance {instance_num} DB created with key {apikey[:15]}...')
           PYEOF
           
-          # Seed all instances
           > /tmp/router_keys.txt
           for i in $(seq 1 $NUM); do
             PORT=$((BASE_PORT + i - 1))
             DATADIR="/tmp/router-$i"
-            APIKEY="sk-test-$(openssl rand -hex 12)"
-            
+            APIKEY="sk-test-$(openssl rand -hex 16)"
             mkdir -p "$DATADIR/.9router/db"
             python3 /tmp/seed_db.py "$i" "$DATADIR" "$APIKEY"
-            
-            echo "$PORT|$APIKEY" >> /tmp/router_keys.txt
+            echo "$i|$PORT|$APIKEY" >> /tmp/router_keys.txt
           done
-          
           echo "📋 All $NUM instances prepared"
           cat /tmp/router_keys.txt
 
-      - name: Start 20 instances
+      - name: Start instances and check RAM
         env:
           NUM: ${{ github.event.inputs.num_instances }}
         run: |
-          NUM=${NUM:-20}
-          echo "🚀 Starting $NUM 9Router instances on ports 21001-210$NUM..."
+          NUM=${NUM:-5}
+          BASE_PORT=21001
+          echo "🚀 Starting $NUM instances (sequential start, then verify all)..."
           
           for i in $(seq 1 $NUM); do
-            PORT=$((21000 + i - 1))
+            PORT=$((BASE_PORT + i - 1))
             DATADIR="/tmp/router-$i"
-            
-            # Start 9Router with HOME pointing to our data dir
             HOME="$DATADIR" 9router --port $PORT --no-browser --skip-update > "/tmp/router-$i.log" 2>&1 &
-            PID=$!
-            echo "Instance $i: port=$PORT pid=$PID"
-            
-            # Wait for this instance to be ready (max 30s)
-            for j in $(seq 1 60); do
-              if curl -s -m 1 http://127.0.0.1:$PORT/v1/models > /dev/null 2>&1; then
-                echo "  ✅ Instance $i ready on port $PORT"
-                break
-              fi
-              sleep 0.5
-            done
+            echo "Started instance $i on port $PORT (pid $!)"
           done
           
-          echo ""
-          echo "=== All instances started ==="
+          # Wait for all to be ready
+          echo "Waiting for instances to be ready..."
+          sleep 15
+          
+          # Check which are ready
           READY=0
           for i in $(seq 1 $NUM); do
-            PORT=$((21000 + i - 1))
-            if curl -s -m 2 http://127.0.0.1:$PORT/v1/models > /dev/null 2>&1; then
+            PORT=$((BASE_PORT + i - 1))
+            if curl -s -m 3 http://127.0.0.1:$PORT/v1/models > /dev/null 2>&1; then
               READY=$((READY + 1))
+              echo "  ✅ Instance $i ready on port $PORT"
+            else
+              echo "  ❌ Instance $i NOT ready on port $PORT"
             fi
           done
           echo "Ready: $READY / $NUM"
+          
+          # Show RAM usage
+          echo "=== RAM usage ==="
+          free -m | head -3
+          echo "=== Process count ==="
+          ps aux | grep -c '[9]router\|[n]ext-server'
+          echo "=== Top processes by RAM ==="
+          ps aux --sort=-%mem | head -10
 
       - name: Test all instances
         env:
           NUM: ${{ github.event.inputs.num_instances }}
         run: |
-          NUM=${NUM:-20}
+          NUM=${NUM:-5}
+          BASE_PORT=21001
           TEST_QUESTION="What is 2+2? Reply with only the number."
           
-          echo "🧪 Testing $NUM instances with question: '$TEST_QUESTION'"
+          echo "🧪 Testing $NUM instances..."
           echo "============================================"
+          
+          cat > /tmp/parse.py << 'PYEOF'
+          import sys, json
+          raw = sys.stdin.read()
+          try:
+              d = json.loads(raw)
+              if 'error' in d:
+                  print('ERROR: ' + d['error'].get('message', str(d['error'])[:200]))
+              else:
+                  print(d['choices'][0]['message']['content'].strip())
+          except Exception as e:
+              print('PARSE_ERROR: ' + raw[:200])
+          PYEOF
           
           PASS=0
           FAIL=0
-          RESULTS=""
-          
-          cat > /tmp/parse_response.py << 'PYEOF'
-          import sys, json
-          try:
-              d = json.load(sys.stdin)
-              if 'error' in d:
-                  print('ERROR: ' + d['error'].get('message', 'unknown'))
-              else:
-                  c = d['choices'][0]['message']['content']
-                  print(c.strip())
-          except Exception as e:
-              print('PARSE_ERROR: ' + str(e))
-          PYEOF
           
           for i in $(seq 1 $NUM); do
-            PORT=$((21000 + i - 1))
-            KEY=$(grep "^$PORT|" /tmp/router_keys.txt | cut -d'|' -f2)
+            PORT=$((BASE_PORT + i - 1))
+            KEY=$(grep "^${i}|" /tmp/router_keys.txt | cut -d'|' -f3)
             
             echo "--- Instance $i (port $PORT) ---"
             
@@ -173,16 +160,14 @@ jobs:
               -H "Authorization: Bearer $KEY" \
               -d "{\"model\":\"oc/deepseek-v4-flash-free\",\"messages\":[{\"role\":\"user\",\"content\":\"$TEST_QUESTION\"}],\"max_tokens\":50}" 2>&1)
             
-            CONTENT=$(echo "$RESPONSE" | python3 /tmp/parse_response.py 2>&1)
+            CONTENT=$(echo "$RESPONSE" | python3 /tmp/parse.py 2>&1)
             
             if echo "$CONTENT" | grep -qi "error"; then
               echo "  ❌ FAIL: $CONTENT"
               FAIL=$((FAIL + 1))
-              RESULTS="${RESULTS}\nInstance ${i} (port ${PORT}): ❌ FAIL - ${CONTENT}"
             else
               echo "  ✅ Response: $CONTENT"
               PASS=$((PASS + 1))
-              RESULTS="${RESULTS}\nInstance ${i} (port ${PORT}): ✅ OK - ${CONTENT}"
             fi
           done
           
@@ -190,9 +175,7 @@ jobs:
           echo "============================================"
           echo "📊 RESULTS: $PASS passed, $FAIL failed (out of $NUM)"
           echo "============================================"
-          echo -e "$RESULTS"
           
-          echo -e "$RESULTS" > /tmp/test_results.txt
           echo "$PASS/$NUM" > /tmp/test_summary.txt
 
       - name: Upload results
@@ -201,6 +184,5 @@ jobs:
         with:
           name: 9router-test-results
           path: |
-            /tmp/test_results.txt
             /tmp/test_summary.txt
             /tmp/router_keys.txt
