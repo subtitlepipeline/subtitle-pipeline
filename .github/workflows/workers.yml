@@ -152,16 +152,17 @@ jobs:
           
           echo "Registering worker $WORKER_NUM"
           
-          # Push state file to a coordination branch
+          # Push state file to the coordination branch (already created by main)
           git config user.name "worker-$WORKER_NUM"
           git config user.email "worker-$WORKER_NUM@users.noreply.github.com"
-          git checkout -b coord-$RUN_ID 2>/dev/null || git checkout coord-$RUN_ID
+          git fetch origin $RUN_ID 2>/dev/null || true
+          git checkout $RUN_ID 2>/dev/null || git checkout -b $RUN_ID origin/$RUN_ID 2>/dev/null || true
           mkdir -p coord
           echo "$URL|$APIKEY" > coord/worker-$WORKER_NUM.txt
           git add coord/worker-$WORKER_NUM.txt
-          git commit -m "worker $WORKER_NUM ready" || echo "nothing to commit"
+          git -c user.name="worker-$WORKER_NUM" -c user.email="worker-$WORKER_NUM@users.noreply.github.com" commit -m "worker $WORKER_NUM ready" || echo "nothing to commit"
           
-          git push origin coord-$RUN_ID 2>&1 | tail -3
+          git push origin $RUN_ID:$RUN_ID 2>&1 | tail -3
           
           echo "Worker $WORKER_NUM registered"
           echo "url=$URL" >> $GITHUB_ENV
@@ -173,8 +174,8 @@ jobs:
         run: |
           # Poll the coordination branch for main's "done" flag
           for i in $(seq 1 180); do
-            git fetch origin coord-$RUN_ID 2>/dev/null
-            if git show "origin/coord-$RUN_ID:coord/done.txt" > /tmp/done.txt 2>/dev/null; then
+            git fetch origin $RUN_ID 2>/dev/null
+            if git show "origin/$RUN_ID:coord/done.txt" > /tmp/done.txt 2>/dev/null; then
               if grep -q "DONE" /tmp/done.txt; then
                 echo "✅ Main signaled completion. Shutting down."
                 exit 0

@@ -41,10 +41,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Dispatch the workers workflow 9 times? No - use matrix in workers.yml
           # The workers.yml has a matrix of 9 workers, so one dispatch triggers all 9
           gh workflow run "9Router Workers (9x)" --repo ${{ github.repository }} -f run_id=$COORD_ID
-          echo "Workers workflow dispatched"
+          echo "Workers workflow dispatched with run_id=$COORD_ID"
 
       - name: Install system packages
         run: |
