@@ -48,15 +48,34 @@ from openai import OpenAI
 # ============ PROMPTS ============
 
 def build_translate_prompt(source_name, numbered):
-    return f"""Translate each English subtitle line to Persian (Farsi). 
+    return f"""You are a master translator. Translate each English subtitle line to Persian (Farsi).
+
+Rules:
+- Translate MEANING, not word-for-word. Restructure to sound natural in Persian.
+- Use polished, fluent Persian like professional dubbing and audiobooks.
+- Correct verb-subject agreement (singular/plural).
+- Keep technical terms and names in original form (AI, YouTube, API, etc).
+- Keep each line concise — suitable for subtitles.
+- Maintain context flow between consecutive lines.
+
 Output ONLY the Persian translations, numbered. No thinking, no explanation.
 
 {numbered}"""
 
 def build_refine_prompt(numbered_pairs):
-    """Build refinement prompt — Persian-only prompt to avoid reasoning loop."""
-    return f"""بازنویسی کن: هر خط فارسی زیر را به بهترین و روان‌ترین ادبیات فارسی بازنویسی کن.
-معنی نباید عوض شود. فقط فارسی، شماره‌گذاری شده.
+    """Build refinement prompt — Persian-only, detailed instructions for literary quality."""
+    return f"""تو یک ویراستار حرفه‌ای ادبی هستی. هر خط فارسی زیر را به بهترین و روان‌ترین شکل ممکن بازنویسی کن.
+
+قوانین:
+- معنی هر خط باید دقیقاً حفظ شود — چیزی اضافه یا حذف نشود.
+- لحن روان، طبیعی و ادبی — مثل ترجمه حرفه‌ای فیلم و سریال.
+- گرامر و دستور زبان فارسی باید بی‌نقص باشد.
+- فعل و فاعل باید با هم هماهنگ باشند (یک/چند).
+- کلمات را به elegante‌ترین معادل فارسی برگردان.
+- خط‌ها کوتاه و مناسب زیرنویس باشند.
+- روانی و خوانایی متن برای مخاطب فارسی‌زبان اولویت اول است.
+
+فقط فارسی بازنویسی‌شده، شماره‌گذاری شده. بدون توضیح.
 
 {numbered_pairs}"""
 
@@ -132,16 +151,48 @@ def extract_persian_from_reasoning(reasoning):
     
     return ""
 
+def call_router_with_fallback(prompt, routers, max_tokens=8000, temperature=0.2, retries=5, timeout=180, expected_count=None):
+    """Try multiple routers until we get a complete response.
+    If expected_count is set, we validate the response has the right number of lines.
+    """
+    errors = []
+    for router in routers:
+        port = router["port"]
+        key = router["key"]
+        for attempt in range(retries):
+            try:
+                result = call_router(port, key, prompt, max_tokens=max_tokens, 
+                                    temperature=temperature, retries=0, timeout=timeout)
+                if result.strip():
+                    # If we know expected count, validate
+                    if expected_count:
+                        parsed = parse_numbered_response(result, expected_count)
+                        if len(parsed) == expected_count:
+                            return result
+                        else:
+                            print(f"  ⚠️ Router {router['id']} port {port}: got {len(parsed)}/{expected_count} lines, retry {attempt+1}")
+                            if attempt < retries - 1:
+                                time.sleep(3)
+                                continue
+                    else:
+                        return result
+            except Exception as e:
+                errors.append(f"router{router['id']}p{port}: {e}")
+                if attempt < retries - 1:
+                    time.sleep(3)
+    raise Exception(f"All routers failed: {'; '.join(errors[:3])}")
+
 def parse_numbered_response(content, expected_count):
-    """Parse numbered response lines into a list."""
+    """Parse numbered response lines into a list.
+    If we get fewer lines than expected, return what we have (NOT padded with duplicates).
+    """
     lines = content.split("\n")
     result = []
     for line in lines:
         cleaned = re.sub(r'^\d+\.\s*', '', line.strip())
         if cleaned:
             result.append(cleaned)
-    while len(result) < expected_count:
-        result.append(result[-1] if result else "")
+    # Return exactly what we got — caller handles shortfalls
     return result[:expected_count]
 
 # ============ CHUNKING ============
@@ -175,24 +226,33 @@ def get_context(start_idx):
 # ============ PASS 1: TRANSLATE ============
 
 def translate_chunk(args):
-    """PASS 1: Translate one chunk of English → Persian."""
+    """PASS 1: Translate one chunk of English -> Persian.
+    Uses call_router_with_fallback: tries up to 5x per router across all 20 routers.
+    Validates response has correct number of lines.
+    """
     chunk, router = args
     chunk_num = chunk["num"]
     start_idx = chunk["start_idx"]
     chunk_texts = chunk["texts"]
-    port = router["port"]
-    key = router["key"]
-
+    
     context = get_context(start_idx)
     numbered = "\n".join(f"{j+1}. {t}" for j, t in enumerate(chunk_texts))
     prompt = build_translate_prompt(source_name, context + numbered)
-
+    
+    # Shuffle routers so different chunks try different routers first
+    import random
+    router_order = routers[:]
+    random.shuffle(router_order)
+    
     try:
-        raw = call_router(port, key, prompt)
+        raw = call_router_with_fallback(prompt, router_order, expected_count=len(chunk_texts))
         translations = parse_numbered_response(raw, len(chunk_texts))
+        # Fill any shortfall with English original (NOT duplicate)
+        while len(translations) < len(chunk_texts):
+            translations.append(chunk_texts[len(translations)])
         return (chunk_num, start_idx, translations, None)
     except Exception as e:
-        print(f"  ❌ PASS 1 Chunk {chunk_num} (port {port}) FAILED: {e}")
+        print(f"  ❌ PASS 1 Chunk {chunk_num} FAILED after all retries: {e}")
         return (chunk_num, start_idx, chunk_texts, str(e))
 
 def run_parallel_pass(pass_name, workers, task_fn, pairs):
@@ -247,15 +307,14 @@ for i in range(0, len(raw_translations), REFINE_BATCH_SIZE):
     })
 
 def refine_chunk(args):
-    """PASS 2: Refine Persian translations to literary quality."""
+    """PASS 2: Refine Persian translations to literary quality.
+    Uses call_router_with_fallback for reliability.
+    """
     chunk, router = args
     chunk_num = chunk["num"]
     start_idx = chunk["start_idx"]
-    chunk_translations = chunk["translations"]  # Persian text to refine
-    port = router["port"]
-    key = router["key"]
-
-    # Build prompt: just the Persian translations, numbered
+    chunk_translations = chunk["translations"]
+    
     pairs_text = []
     for j, fa in enumerate(chunk_translations):
         pairs_text.append(f"{j+1}. {fa}")
@@ -263,13 +322,19 @@ def refine_chunk(args):
     numbered_pairs = "\n".join(pairs_text)
     prompt = build_refine_prompt(numbered_pairs)
 
+    import random
+    router_order = routers[:]
+    random.shuffle(router_order)
+
     try:
-        raw = call_router(port, key, prompt, temperature=0.15)
-        refined = parse_numbered_response(raw, len(chunk_texts))
+        raw = call_router_with_fallback(prompt, router_order, 
+                                        expected_count=len(chunk_translations), temperature=0.15)
+        refined = parse_numbered_response(raw, len(chunk_translations))
+        while len(refined) < len(chunk_translations):
+            refined.append(chunk_translations[len(refined)])
         return (chunk_num, start_idx, refined, None)
     except Exception as e:
-        print(f"  ❌ PASS 2 Chunk {chunk_num} (port {port}) FAILED: {e}")
-        # Fallback: keep pass 1 translation
+        print(f"  ❌ PASS 2 Chunk {chunk_num} FAILED after all retries: {e}")
         return (chunk_num, start_idx, chunk_translations, str(e))
 
 # --- PASS 2: Refine ---
