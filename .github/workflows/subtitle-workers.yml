@@ -136,15 +136,32 @@ jobs:
           fi
 
           APIKEY=$(cat /tmp/router_api_key.txt)
-          echo "${{ matrix.worker }}|$URL|$APIKEY" > /tmp/worker_out.txt
-          cat /tmp/worker_out.txt
+          echo "${{ matrix.worker }}|$URL|$APIKEY" > /tmp/worker-${{ matrix.worker }}.txt
+          cat /tmp/worker-${{ matrix.worker }}.txt
 
       - name: Upload worker info artifact
         uses: actions/upload-artifact@v4
         with:
-          name: worker-${{ matrix.worker }}
-          path: /tmp/worker_out.txt
+          name: worker-${{ matrix.worker }}-info
+          path: /tmp/worker-${{ matrix.worker }}.txt
           if-no-files-found: error
+
+      # CRITICAL: keep the runner + tunnel ALIVE until main finishes translating.
+      # If this job ends, the runner is killed and the tunnel dies.
+      - name: Keep alive until main finishes
+        run: |
+          echo "Keeping tunnel alive for main pipeline (max 45 min)..."
+          for i in $(seq 1 90); do
+            sleep 30
+            # Check if main signaled completion via a marker commit (skip for now — just stay alive)
+            true
+          done
+          echo "Keep-alive expired (45 min). Tunnel closing."
+      - name: Keep alive phase 2
+        run: |
+          echo "Extended keep-alive (another 45 min)..."
+          sleep 2700
+          echo "Extended keep-alive expired."
 
   # Main job — runs after all workers are up
   subtitle:
@@ -190,7 +207,9 @@ jobs:
       - name: Build router list
         run: |
           > /tmp/router_keys.txt
-          for f in workers/*.txt; do
+          # Each artifact has a unique filename now (worker-N.txt), so merge works
+          ls -la workers/ 2>/dev/null || true
+          for f in workers/worker-*.txt; do
             [ -f "$f" ] || continue
             cat "$f" >> /tmp/router_keys.txt
             echo "  Found: $(cat $f | cut -d'|' -f2 | head -c 40)..."
