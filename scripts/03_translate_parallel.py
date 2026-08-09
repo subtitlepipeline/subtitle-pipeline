@@ -57,6 +57,7 @@ Rules:
 - Keep technical terms and names in original form (AI, YouTube, API, etc).
 - Keep each line concise — suitable for subtitles.
 - Maintain context flow between consecutive lines.
+- Use ZWNJ (نیم‌فاصله) in: می‌کند, کتاب‌ها, بی‌اختیار, نشسته‌اند, سریع‌تر.
 
 Output ONLY the Persian translations, numbered. No thinking, no explanation.
 
@@ -74,6 +75,7 @@ def build_refine_prompt(numbered_pairs):
 - کلمات را به elegante‌ترین معادل فارسی برگردان.
 - خط‌ها کوتاه و مناسب زیرنویس باشند.
 - روانی و خوانایی متن برای مخاطب فارسی‌زبان اولویت اول است.
+- نیم‌فاصله درست: می‌کند, کتاب‌ها, بی‌اختیار, نشسته‌اند, سریع‌تر.
 
 فقط فارسی بازنویسی‌شده، شماره‌گذاری شده. بدون توضیح.
 
