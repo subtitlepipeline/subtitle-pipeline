@@ -1,0 +1,186 @@
+name: 9Router Workers (9x)
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Unique coordination ID (from main workflow)'
+        required: true
+        type: string
+
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        worker: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install 9Router + cloudflared
+        run: |
+          npm install -g 9router@0.5.40 2>&1 | tail -2
+          curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
+          chmod +x /usr/local/bin/cloudflared
+          cloudflared --version
+
+      - name: Prepare 9Router instance
+        run: |
+          NUM=1
+          BASE_PORT=21001
+          GLOBAL_NM=$(npm root -g)
+          ROUTER_DIR="$GLOBAL_NM/9router"
+          APP_DIR="$ROUTER_DIR/app"
+          SERVER="$APP_DIR/server.js"
+          BUNDLED_NM="$APP_DIR/node_modules"
+          echo "$ROUTER_DIR" > /tmp/router_dir.txt
+          echo "$BUNDLED_NM" > /tmp/bundled_nm.txt
+
+          cat > /tmp/seed_db.py << 'PYEOF'
+          import sqlite3, json, uuid, sys, os
+          instance_num = int(sys.argv[1])
+          datadir = sys.argv[2]
+          apikey = sys.argv[3]
+          sqlite_path = os.path.join(datadir, '.9router', 'db', 'data.sqlite')
+          os.makedirs(os.path.dirname(sqlite_path), exist_ok=True)
+          conn = sqlite3.connect(sqlite_path)
+          c = conn.cursor()
+          c.executescript('''
+          CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT);
+          CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY, data TEXT);
+          CREATE TABLE IF NOT EXISTS providerConnections (id TEXT PRIMARY KEY, provider TEXT, authType TEXT, name TEXT, email TEXT, priority INTEGER, isActive INTEGER, data TEXT, createdAt TEXT, updatedAt TEXT);
+          CREATE TABLE IF NOT EXISTS providerNodes (id TEXT PRIMARY KEY, type TEXT, name TEXT, data TEXT, createdAt TEXT, updatedAt TEXT);
+          CREATE TABLE IF NOT EXISTS proxyPools (id TEXT PRIMARY KEY, isActive INTEGER, testStatus TEXT, data TEXT, createdAt TEXT, updatedAt TEXT);
+          CREATE TABLE IF NOT EXISTS apiKeys (id TEXT PRIMARY KEY, key TEXT, name TEXT, machineId TEXT, isActive INTEGER, createdAt TEXT);
+          CREATE TABLE IF NOT EXISTS combos (id TEXT PRIMARY KEY, name TEXT, kind TEXT, models TEXT, createdAt TEXT, updatedAt TEXT);
+          CREATE TABLE IF NOT EXISTS kv (scope TEXT, key TEXT, value TEXT, PRIMARY KEY (scope, key));
+          CREATE TABLE IF NOT EXISTS usageHistory (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, provider TEXT, model TEXT, connectionId TEXT, apiKey TEXT, endpoint TEXT, promptTokens INTEGER, completionTokens INTEGER, cost REAL, status TEXT, tokens TEXT, meta TEXT);
+          CREATE TABLE IF NOT EXISTS usageDaily (dateKey TEXT PRIMARY KEY, data TEXT);
+          CREATE TABLE IF NOT EXISTS requestDetails (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, provider TEXT, model TEXT, connectionId TEXT, status TEXT, data TEXT);
+          ''')
+          combo_id = str(uuid.uuid4())
+          c.execute('INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)',
+                    (combo_id, '9Router', None, json.dumps(['oc/deepseek-v4-flash-free']), '2026-08-08T00:00:00.000Z', '2026-08-08T00:00:00.000Z'))
+          key_id = str(uuid.uuid4())
+          c.execute('INSERT INTO apiKeys (id, key, name, machineId, isActive, createdAt) VALUES (?, ?, ?, ?, ?, ?)',
+                    (key_id, apikey, 'router-' + str(instance_num), None, 1, '2026-08-08T00:00:00.000Z'))
+          for model_id in ['deepseek-v4-flash-free', 'mimo-v2.5-free', 'longcat-2.0-free']:
+              kv_key = 'oc|' + model_id + '|llm'
+              kv_val = json.dumps({'providerAlias': 'oc', 'id': model_id, 'type': 'llm', 'name': model_id})
+              c.execute('INSERT OR REPLACE INTO kv (scope, key, value) VALUES (?, ?, ?)', ('customModels', kv_key, kv_val))
+          c.execute('INSERT OR REPLACE INTO _meta (key, value) VALUES (?, ?)', ('schemaVersion', '1'))
+          c.execute('INSERT OR REPLACE INTO _meta (key, value) VALUES (?, ?)', ('backupSchemaVersion', '1'))
+          conn.commit()
+          conn.close()
+          PYEOF
+
+          DATADIR="/tmp/router-${{ matrix.worker }}"
+          APIKEY="sk-par$(openssl rand -hex 16)"
+          mkdir -p "$DATADIR/.9router/db"
+          python3 /tmp/seed_db.py 1 "$DATADIR" "$APIKEY"
+          echo "$APIKEY" > /tmp/router_api_key.txt
+
+      - name: Start 9Router
+        run: |
+          ROUTER_DIR=$(cat /tmp/router_dir.txt)
+          BUNDLED_NM=$(cat /tmp/bundled_nm.txt)
+          SERVER="$ROUTER_DIR/app/server.js"
+          DATADIR="/tmp/router-${{ matrix.worker }}"
+          RUNTIME_NM="$DATADIR/.9router/runtime/node_modules"
+          NODE_PATH="$RUNTIME_NM:$BUNDLED_NM:$NODE_PATH"
+
+          HOME="$DATADIR" \
+          NODE_PATH="$NODE_PATH" \
+          PORT=21001 \
+          HOSTNAME=127.0.0.1 \
+          node --dns-result-order=ipv4first --max-old-space-size=512 "$SERVER" \
+            > /tmp/router.log 2>&1 &
+
+          echo "Waiting for 9Router to start..."
+          for i in $(seq 1 30); do
+            if curl -s -m 5 http://127.0.0.1:21001/v1/models > /dev/null 2>&1; then
+              echo "✅ 9Router ready on port 21001"
+              break
+            fi
+            sleep 2
+          done
+
+          # Verify it can reach OpenCode
+          APIKEY=$(cat /tmp/router_api_key.txt)
+          TEST=$(curl -s -m 60 http://127.0.0.1:21001/v1/chat/completions \
+            -H 'Content-Type: application/json' \
+            -H "Authorization: Bearer $APIKEY" \
+            -d '{"model":"oc/deepseek-v4-flash-free","messages":[{"role":"user","content":"say hi"}],"max_tokens":20}' | head -c 100)
+          echo "Test: $TEST"
+
+      - name: Start cloudflared tunnel
+        run: |
+          cloudflared tunnel --url http://localhost:21001 --no-autoupdate \
+            > /tmp/tunnel.log 2>&1 &
+          echo "Waiting for tunnel URL..."
+          for i in $(seq 1 30); do
+            URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' /tmp/tunnel.log | head -1)
+            if [ -n "$URL" ]; then
+              echo "✅ Tunnel URL: $URL"
+              break
+            fi
+            sleep 2
+          done
+
+          if [ -z "$URL" ]; then
+            echo "❌ Tunnel failed"
+            exit 1
+          fi
+
+          APIKEY=$(cat /tmp/router_api_key.txt)
+          echo "$URL|$APIKEY" > /tmp/worker_info.txt
+          cat /tmp/worker_info.txt
+
+      - name: Register worker with main (via state file)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          WORKER_NUM=${{ matrix.worker }}
+          URL=$(cut -d'|' -f1 /tmp/worker_info.txt)
+          APIKEY=$(cut -d'|' -f2 /tmp/worker_info.txt)
+          
+          echo "Registering worker $WORKER_NUM"
+          
+          # Push state file to a coordination branch
+          git config user.name "worker-$WORKER_NUM"
+          git config user.email "worker-$WORKER_NUM@users.noreply.github.com"
+          git checkout -b coord-$RUN_ID 2>/dev/null || git checkout coord-$RUN_ID
+          mkdir -p coord
+          echo "$URL|$APIKEY" > coord/worker-$WORKER_NUM.txt
+          git add coord/worker-$WORKER_NUM.txt
+          git commit -m "worker $WORKER_NUM ready" || echo "nothing to commit"
+          
+          git push origin coord-$RUN_ID 2>&1 | tail -3
+          
+          echo "Worker $WORKER_NUM registered"
+          echo "url=$URL" >> $GITHUB_ENV
+
+      - name: Wait for completion signal
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          # Poll the coordination branch for main's "done" flag
+          for i in $(seq 1 180); do
+            git fetch origin coord-$RUN_ID 2>/dev/null
+            if git show "origin/coord-$RUN_ID:coord/done.txt" > /tmp/done.txt 2>/dev/null; then
+              if grep -q "DONE" /tmp/done.txt; then
+                echo "✅ Main signaled completion. Shutting down."
+                exit 0
+              fi
+            fi
+            sleep 10
+          done
+          echo "⏰ Timed out waiting for completion signal"
+          exit 0

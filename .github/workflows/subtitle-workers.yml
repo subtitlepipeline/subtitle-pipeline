@@ -1,0 +1,195 @@
+name: Subtitle Pipeline (9 Workers)
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'YouTube URL (downloaded on VPS, served via HTTP)'
+        required: true
+        type: string
+
+jobs:
+  subtitle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate coordination ID
+        run: |
+          COORD_ID="coord-$(date +%s)-${{ github.run_id }}"
+          echo "COORD_ID=$COORD_ID" >> $GITHUB_ENV
+          echo "Coordination ID: $COORD_ID"
+
+      - name: Create coordination branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "main-pipeline"
+          git config user.email "main@users.noreply.github.com"
+          git checkout -b $COORD_ID
+          mkdir -p coord
+          echo "PENDING" > coord/status.txt
+          git add coord/status.txt
+          git commit -m "init coordination"
+          git push origin $COORD_ID
+
+      - name: Dispatch 9 worker workflows
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Dispatch the workers workflow 9 times? No - use matrix in workers.yml
+          # The workers.yml has a matrix of 9 workers, so one dispatch triggers all 9
+          gh workflow run "9Router Workers (9x)" --repo ${{ github.repository }} -f run_id=$COORD_ID
+          echo "Workers workflow dispatched"
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg fonts-vazirmatn curl
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install faster-whisper pysubs2 openai requests
+
+      - name: Download video from VPS
+        env:
+          VPS_IP: ${{ secrets.VPS_IP }}
+        run: |
+          mkdir -p output
+          curl -sL "http://$VPS_IP:9999/video.mp4" -o output/video.mp4
+          curl -sL "http://$VPS_IP:9999/title.txt" -o output/title.txt
+          ls -lh output/video.mp4
+          echo "Video title: $(cat output/title.txt)"
+          ffprobe -v error -show_entries stream=width,height -of csv=p=0 output/video.mp4
+
+      - name: Whisper transcription (large-v3)
+        run: |
+          python3 scripts/02_whisper.py output/video.mp4 output/transcript.json
+
+      - name: Wait for 9 workers ready
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Waiting for 9 workers to register..."
+          cd "${{ github.workspace }}"
+          
+          for i in $(seq 1 60); do
+            git fetch origin $COORD_ID 2>/dev/null
+            READY=0
+            for w in $(seq 1 9); do
+              if git show "origin/$COORD_ID:coord/worker-$w.txt" > /tmp/worker-$w.txt 2>/dev/null; then
+                READY=$((READY + 1))
+              fi
+            done
+            echo "  [${i}] Workers ready: $READY/9"
+            if [ "$READY" -ge 9 ]; then
+              echo "✅ All 9 workers ready!"
+              break
+            fi
+            sleep 10
+          done
+          
+          if [ "$READY" -lt 9 ]; then
+            echo "❌ Only $READY/9 workers came up"
+            exit 1
+          fi
+
+      - name: Build router list
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd "${{ github.workspace }}"
+          > /tmp/router_keys.txt
+          for w in $(seq 1 9); do
+            git show "origin/$COORD_ID:coord/worker-$w.txt" > /tmp/worker-$w.txt 2>/dev/null
+            URL=$(cut -d'|' -f1 /tmp/worker-$w.txt)
+            APIKEY=$(cut -d'|' -f2 /tmp/worker-$w.txt)
+            echo "$w|$URL|$APIKEY" >> /tmp/router_keys.txt
+            echo "  Worker $w: $URL"
+          done
+          cat /tmp/router_keys.txt
+          cp /tmp/router_keys.txt output/router_keys.txt
+
+      - name: Translate to Persian (9 workers x DeepSeek)
+        run: |
+          python3 scripts/03_translate_remote.py output/transcript.json output/translated.json output/router_keys.txt 9
+
+      - name: Build SRT + Validate (3x)
+        run: |
+          python3 scripts/04_build_srt.py output/transcript.json output/translated.json output/subtitle.srt
+          python3 scripts/validate_subs.py output/subtitle.srt fa
+          python3 scripts/validate_subs.py output/subtitle.srt fa
+          python3 scripts/validate_subs.py output/subtitle.srt fa
+
+      - name: Build cinema ASS
+        run: |
+          VIDEO_HEIGHT=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 output/video.mp4)
+          FONTSIZE=$(python3 -c "print(round($VIDEO_HEIGHT * 0.014))")
+          python3 scripts/make_cinema_ass.py output/subtitle.srt output/subtitle.ass $FONTSIZE
+
+      - name: Burn-in subtitles (1080p + 720p + 480p)
+        run: |
+          VIDEO_TITLE=$(cat output/title.txt)
+          python3 scripts/05_burnin.py output/video.mp4 output/subtitle.ass "output/$VIDEO_TITLE"
+
+      - name: Upload to GitHub Release
+        run: |
+          VIDEO_TITLE=$(cat output/title.txt)
+          python3 scripts/06_upload.py "output/$VIDEO_TITLE" output/subtitle.srt output/subtitle.ass "$VIDEO_TITLE"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Signal completion to workers
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd "${{ github.workspace }}"
+          git config user.name "main-pipeline"
+          git config user.email "main@users.noreply.github.com"
+          git checkout $COORD_ID 2>/dev/null || git checkout -b $COORD_ID
+          echo "DONE" > coord/done.txt
+          git add coord/done.txt
+          git commit -m "done signal" || echo "nothing to commit"
+          git push origin $COORD_ID 2>&1 | tail -2
+          echo "✅ Done signal pushed"
+
+      - name: Cleanup coordination branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Keep the branch for debugging; workers will read done.txt
+          echo "Coordination branch: $COORD_ID (kept for inspection)"
+
+      - name: Output result
+        run: |
+          cat output/result.json
+
+  cleanup:
+    needs: subtitle
+    runs-on: ubuntu-latest
+    if: success()
+    permissions:
+      contents: write
+    steps:
+      - name: Delete releases older than 7 days
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CUTOFF=$(date -u -d "7 days ago" +%Y-%m-%dT%H:%M:%SZ)
+          echo "Deleting releases older than: $CUTOFF"
+          gh release list --repo subtitlepipeline/subtitle-pipeline --json tagName,createdAt -q '.[] | "\(.createdAt) \(.tagName)"' | while read -r line; do
+            CREATED=$(echo "$line" | awk '{print $1}')
+            TAG=$(echo "$line" | awk '{print $2}')
+            if [[ "$CREATED" < "$CUTOFF" ]]; then
+              echo "🗑️ Deleting release $TAG (created $CREATED)"
+              gh release delete "$TAG" --repo subtitlepipeline/subtitle-pipeline --yes --cleanup-tag
+            fi
+          done
+          echo "✅ Cleanup done"
