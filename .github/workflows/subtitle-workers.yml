@@ -146,16 +146,31 @@ jobs:
           path: /tmp/worker-${{ matrix.worker }}.txt
           if-no-files-found: error
 
-      # CRITICAL: keep the runner + tunnel ALIVE until main finishes translating.
-      # If this job ends, the runner is killed and the tunnel dies.
-      - name: Keep alive until main finishes
+      # CRITICAL: keep the runner + tunnel ALIVE until main signals translation done.
+      # Main pushes coord/translate_done.txt to branch coord-<run_id> when PASS 3 finishes.
+      # Worker polls every 15s and exits immediately when done → no idle runners during burn.
+      - name: Keep alive until main signals translation done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.run_id }}
         run: |
-          echo "Keeping tunnel alive for main pipeline (max 15 min for test)..."
-          for i in $(seq 1 30); do
-            sleep 30
-            true
+          COORD_BRANCH="coord-$RUN_ID"
+          echo "Keeping tunnel alive; polling for translate_done signal on $COORD_BRANCH..."
+          git config user.name "worker"
+          git config user.email "worker@users.noreply.github.com"
+          for i in $(seq 1 240); do
+            sleep 15
+            git fetch origin $COORD_BRANCH 2>/dev/null || true
+            if git show "origin/$COORD_BRANCH:coord/translate_done.txt" 2>/dev/null | grep -q DONE; then
+              echo "✅ Translation done — shutting down worker now"
+              exit 0
+            fi
+            if [ $((i % 4)) -eq 0 ]; then
+              echo "  [$(TZ=UTC date +%H:%M:%S)] waiting for translate_done... ($i)"
+            fi
           done
-          echo "Keep-alive expired (15 min). Tunnel closing."
+          echo "⏰ Keep-alive expired (60 min). Shutting down."
+          exit 0
 
   # Main job — runs after all workers are up
   subtitle:
@@ -220,6 +235,23 @@ jobs:
       - name: Translate to Persian (15 workers x DeepSeek, 3-pass)
         run: |
           python3 scripts/03_translate_remote.py output/transcript.json output/translated.json output/router_keys.txt 15
+
+      - name: Signal translation done (free workers)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          COORD_BRANCH="coord-$RUN_ID"
+          git config user.name "main"
+          git config user.email "main@users.noreply.github.com"
+          git fetch origin $COORD_BRANCH 2>/dev/null || git checkout -b $COORD_BRANCH
+          git checkout $COORD_BRANCH 2>/dev/null || true
+          mkdir -p coord
+          echo "DONE" > coord/translate_done.txt
+          git add coord/translate_done.txt
+          git -c user.name="main" -c user.email="main@users.noreply.github.com" commit -m "translation done" || echo "already committed"
+          git push origin $COORD_BRANCH 2>&1 | tail -2 || true
+          echo "✅ Done signal pushed to $COORD_BRANCH — workers will shut down"
 
       - name: Build SRT + Validate (3x)
         run: |
