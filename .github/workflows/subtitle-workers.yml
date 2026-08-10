@@ -118,8 +118,8 @@ jobs:
         run: |
           # Install tailscale
           curl -fsSL https://tailscale.com/install.sh | sh > /tmp/ts_install.log 2>&1 || true
-          # Start tailscaled in userspace networking mode (no root/systemd needed)
-          (tailscaled --tun=userspace-networking --socket=/tmp/ts.sock > /tmp/tsd.log 2>&1 &)
+          # Start tailscaled (normal tun mode — GitHub runners have /dev/net/tun)
+          (tailscaled --socket=/tmp/ts.sock > /tmp/tsd.log 2>&1 &)
           for i in $(seq 1 15); do
             if [ -S /tmp/ts.sock ]; then break; fi
             sleep 1
@@ -134,8 +134,18 @@ jobs:
             exit 1
           fi
           echo "✅ Tailscale IP: $TS_IP"
+          # Expose 9Router via tailscale serve (tailnet-only URL)
+          tailscale --socket=/tmp/ts.sock serve --bg 21001 > /tmp/ts_serve.log 2>&1
+          sleep 2
+          SERVED_URL=$(tailscale --socket=/tmp/ts.sock serve status 2>/dev/null | grep -oE 'https://[a-z0-9.-]+\.ts\.net' | head -1)
+          if [ -z "$SERVED_URL" ]; then
+            echo "ERROR: tailscale serve failed"
+            cat /tmp/ts_serve.log
+            exit 1
+          fi
+          echo "✅ Serve URL: $SERVED_URL"
           APIKEY=$(cat /tmp/router_api_key.txt)
-          echo "${{ matrix.worker }}|http://$TS_IP:21001|$APIKEY" > /tmp/worker-${{ matrix.worker }}.txt
+          echo "${{ matrix.worker }}|$SERVED_URL/v1|$APIKEY" > /tmp/worker-${{ matrix.worker }}.txt
           cat /tmp/worker-${{ matrix.worker }}.txt
 
       - name: Upload worker info artifact
@@ -191,7 +201,7 @@ jobs:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh > /tmp/ts_install.log 2>&1 || true
-          (tailscaled --tun=userspace-networking --socket=/tmp/ts.sock > /tmp/tsd.log 2>&1 &)
+          (tailscaled --socket=/tmp/ts.sock > /tmp/tsd.log 2>&1 &)
           for i in $(seq 1 15); do
             if [ -S /tmp/ts.sock ]; then break; fi
             sleep 1
