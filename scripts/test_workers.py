@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Test each worker router with a unique question and print responses."""
-import sys, json, time
+"""Test each worker router with a unique question in PARALLEL."""
+import sys, json, time, concurrent.futures
 
 keys_file = sys.argv[1]
 
@@ -11,7 +11,7 @@ with open(keys_file) as f:
         if len(parts) >= 3:
             routers.append({"id": int(parts[0]), "url": parts[1], "key": parts[2]})
 
-print(f"🧪 Testing {len(routers)} workers with unique questions...")
+print(f"🧪 Testing {len(routers)} workers in PARALLEL with unique questions...")
 print("=" * 60)
 
 from openai import OpenAI
@@ -26,12 +26,16 @@ questions = [
     "Say the word: ETA",
     "Say the word: THETA",
     "Say the word: IOTA",
+    "Say the word: KAPPA",
+    "Say the word: LAMBDA",
+    "Say the word: MU",
+    "Say the word: NU",
+    "Say the word: XI",
+    "Say the word: OMICRON",
 ]
 
-results = []
-ok = 0
-for i, router in enumerate(routers):
-    q = questions[i % len(questions)]
+def ping(router):
+    q = questions[(router["id"] - 1) % len(questions)]
     url = router["url"].rstrip("/") + "/v1"
     try:
         client = OpenAI(base_url=url, api_key=router["key"])
@@ -39,26 +43,36 @@ for i, router in enumerate(routers):
         resp = client.chat.completions.create(
             model="oc/deepseek-v4-flash-free",
             messages=[{"role": "user", "content": q}],
-            max_tokens=60,
+            max_tokens=20,
             temperature=0,
-            timeout=60
+            timeout=30
         )
         dt = time.time() - t0
         content = (resp.choices[0].message.content or "").strip()
-        if not content:
-            reasoning = getattr(resp.choices[0].message, 'reasoning_content', '') or ""
-            content = "(empty content, reasoning: " + reasoning[:40] + ")"
-        status = "OK" if content else "EMPTY"
-        if content:
-            ok += 1
-        results.append((router["id"], status, dt, content))
-        print(f"  ✅ Worker {router['id']} [{status}] {dt:.1f}s: {content[:60]}")
+        ok = bool(content)
+        return (router["id"], "OK" if ok else "EMPTY", dt, content[:40])
     except Exception as e:
-        results.append((router["id"], "FAIL", 0, str(e)[:80]))
-        print(f"  ❌ Worker {router['id']} FAIL: {str(e)[:100]}")
+        return (router["id"], "FAIL", 0, str(e)[:60])
 
+# Run all pings in parallel
+t0 = time.time()
+results = []
+with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+    futures = {executor.submit(ping, r): r for r in routers}
+    for future in concurrent.futures.as_completed(futures):
+        results.append(future.result())
+
+results.sort(key=lambda x: x[0])
+ok = 0
+for rid, status, dt, content in results:
+    if status == "OK":
+        ok += 1
+    icon = "✅" if status == "OK" else "❌"
+    print(f"  {icon} Worker {rid} [{status}] {dt:.1f}s: {content}")
+
+elapsed = time.time() - t0
 print("=" * 60)
-print(f"📊 Result: {ok}/{len(routers)} workers responded")
+print(f"📊 Result: {ok}/{len(routers)} workers responded (total {elapsed:.1f}s)")
 if ok < len(routers):
     print("❌ SOME WORKERS FAILED — check tunnel URLs above")
     sys.exit(1)
