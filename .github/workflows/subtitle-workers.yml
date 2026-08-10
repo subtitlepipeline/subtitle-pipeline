@@ -130,18 +130,9 @@ jobs:
             exit 1
           fi
           echo "✅ Tailscale IP: $TS_IP"
-          # Expose 9Router via tailscale serve (tailnet-only URL)
-          sudo tailscale serve --bg 21001 > /tmp/ts_serve.log 2>&1
-          sleep 2
-          SERVED_URL=$(tailscale serve status 2>/dev/null | grep -oE 'https://[a-z0-9.-]+\.ts\.net' | head -1)
-          if [ -z "$SERVED_URL" ]; then
-            echo "ERROR: tailscale serve failed"
-            cat /tmp/ts_serve.log
-            exit 1
-          fi
-          echo "✅ Serve URL: $SERVED_URL"
+          # 9Router already on 0.0.0.0:21001 — directly reachable via Tailscale IP
           APIKEY=$(cat /tmp/router_api_key.txt)
-          echo "${{ matrix.worker }}|$SERVED_URL/v1|$APIKEY" > /tmp/worker-${{ matrix.worker }}.txt
+          echo "${{ matrix.worker }}|http://$TS_IP:21001/v1|$APIKEY" > /tmp/worker-${{ matrix.worker }}.txt
           cat /tmp/worker-${{ matrix.worker }}.txt
 
       - name: Upload worker info artifact
