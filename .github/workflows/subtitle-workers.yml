@@ -116,33 +116,23 @@ jobs:
         env:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         run: |
-          # Install tailscale
-          curl -fsSL https://tailscale.com/install.sh | sh > /tmp/ts_install.log 2>&1 || true
-          # GitHub runners have a preinstalled tailscaled — kill it (owns the TUN)
-          sudo systemctl stop tailscaled 2>/dev/null || true
-          sudo pkill -f tailscaled 2>/dev/null || true
-          sleep 2
-          rm -f /tmp/ts.sock
-          # Start tailscaled (normal tun mode)
-          (tailscaled --socket=/tmp/ts.sock --state=/tmp/ts.state > /tmp/tsd.log 2>&1 &)
-          for i in $(seq 1 15); do
-            if [ -S /tmp/ts.sock ]; then break; fi
-            sleep 1
-          done
-          # Join tailnet
-          tailscale --socket=/tmp/ts.sock up --authkey="$TS_AUTHKEY" --hostname="worker-${{ matrix.worker }}" > /tmp/ts_up.log 2>&1
+          # Use the PREINSTALLED tailscaled (systemd service on GH runners)
+          sudo systemctl start tailscaled 2>&1 | head -1 || true
+          sleep 3
+          # Join tailnet with tagged authkey
+          sudo tailscale up --authkey="$TS_AUTHKEY" --hostname="worker-${{ matrix.worker }}" > /tmp/ts_up.log 2>&1
           sleep 5
-          TS_IP=$(tailscale --socket=/tmp/ts.sock ip -4 2>/dev/null | head -1)
+          TS_IP=$(tailscale ip -4 2>/dev/null | head -1)
           if [ -z "$TS_IP" ]; then
             echo "ERROR: tailscale join failed"
-            cat /tmp/ts_up.log; cat /tmp/tsd.log | tail -5
+            cat /tmp/ts_up.log
             exit 1
           fi
           echo "✅ Tailscale IP: $TS_IP"
           # Expose 9Router via tailscale serve (tailnet-only URL)
-          tailscale --socket=/tmp/ts.sock serve --bg 21001 > /tmp/ts_serve.log 2>&1
+          sudo tailscale serve --bg 21001 > /tmp/ts_serve.log 2>&1
           sleep 2
-          SERVED_URL=$(tailscale --socket=/tmp/ts.sock serve status 2>/dev/null | grep -oE 'https://[a-z0-9.-]+\.ts\.net' | head -1)
+          SERVED_URL=$(tailscale serve status 2>/dev/null | grep -oE 'https://[a-z0-9.-]+\.ts\.net' | head -1)
           if [ -z "$SERVED_URL" ]; then
             echo "ERROR: tailscale serve failed"
             cat /tmp/ts_serve.log
@@ -205,22 +195,16 @@ jobs:
         env:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         run: |
-          curl -fsSL https://tailscale.com/install.sh | sh > /tmp/ts_install.log 2>&1 || true
-          sudo systemctl stop tailscaled 2>/dev/null || true
-          sudo pkill -f tailscaled 2>/dev/null || true
-          sleep 2
-          rm -f /tmp/ts.sock
-          (tailscaled --socket=/tmp/ts.sock --state=/tmp/ts.state > /tmp/tsd.log 2>&1 &)
-          for i in $(seq 1 15); do
-            if [ -S /tmp/ts.sock ]; then break; fi
-            sleep 1
-          done
-          tailscale --socket=/tmp/ts.sock up --authkey="$TS_AUTHKEY" --hostname="main-runner" > /tmp/ts_up.log 2>&1
+          # Use preinstalled tailscaled
+          sudo systemctl start tailscaled 2>&1 | head -1 || true
+          sleep 3
+          sudo tailscale up --authkey="$TS_AUTHKEY" --hostname="main-runner" > /tmp/ts_up.log 2>&1
           sleep 5
-          TS_IP=$(tailscale --socket=/tmp/ts.sock ip -4 2>/dev/null | head -1)
+          TS_IP=$(tailscale ip -4 2>/dev/null | head -1)
           echo "Main Tailscale IP: $TS_IP"
           if [ -z "$TS_IP" ]; then
-            echo "Warning: main not in tailnet — will retry"
+            echo "Warning: main not in tailnet"
+            cat /tmp/ts_up.log
           fi
 
       - name: Install Python dependencies

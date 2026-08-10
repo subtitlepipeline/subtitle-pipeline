@@ -12,21 +12,14 @@ jobs:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         run: |
           set -x
-          # GitHub runners have a preinstalled tailscaled — kill it first (it owns the TUN)
-          sudo systemctl stop tailscaled 2>/dev/null || true
-          sudo pkill -f tailscaled 2>/dev/null || true
-          sleep 2
-          rm -f /tmp/ts.sock
-          curl -fsSL https://tailscale.com/install.sh | sh 2>&1 | tail -3
-          (tailscaled --socket=/tmp/ts.sock --state=/tmp/ts.state > /tmp/tsd.log 2>&1 &)
-          for i in $(seq 1 15); do
-            if [ -S /tmp/ts.sock ]; then echo "socket ready"; break; fi
-            sleep 1
-          done
-          echo "--- tsd.log ---"
-          cat /tmp/tsd.log | tail -20
-          tailscale --socket=/tmp/ts.sock up --authkey="$TS_AUTHKEY" --hostname="test-join-${{ github.run_id }}" 2>&1 | head -10
+          # Use the PREINSTALLED tailscaled (systemd service on GH runners)
+          sudo systemctl start tailscaled 2>&1 | head -2 || true
+          sleep 3
+          echo "--- tailscale status ---"
+          tailscale status 2>&1 | head -5
+          echo "--- up ---"
+          sudo tailscale up --authkey="$TS_AUTHKEY" --hostname="test-join-${{ github.run_id }}" 2>&1 | head -10
           echo "--- ip ---"
-          tailscale --socket=/tmp/ts.sock ip -4 2>&1 | head -3
+          tailscale ip -4 2>&1 | head -3
           echo "--- serve test ---"
-          tailscale --socket=/tmp/ts.sock serve --bg 21001 2>&1 | head -8
+          sudo tailscale serve --bg 21001 2>&1 | head -8
