@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        worker: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+        worker: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     timeout-minutes: 120
     permissions:
       contents: write
@@ -217,9 +217,9 @@ jobs:
           python3 scripts/test_workers.py output/router_keys.txt
           echo "--- Test completed ---"
 
-      - name: Translate to Persian (9 workers x DeepSeek)
+      - name: Translate to Persian (15 workers x DeepSeek, 3-pass)
         run: |
-          python3 scripts/03_translate_remote.py output/transcript.json output/translated.json output/router_keys.txt 9
+          python3 scripts/03_translate_remote.py output/transcript.json output/translated.json output/router_keys.txt 15
 
       - name: Build SRT + Validate (3x)
         run: |

@@ -327,6 +327,101 @@ for i, t in enumerate(all_translations):
     if t is None:
         all_translations[i] = raw_translations[i]
 
+# ============ PASS 3: UNIFY (whole-subtitle consistency) ============
+# New phase: review the ENTIRE subtitle text for consistent tone, terminology,
+# and natural flow. Uses overlapping windows so every line gets reviewed
+# with both its neighbors AND context from the full document.
+
+def build_unify_prompt(all_lines, start_idx, window_lines):
+    """Prompt for PASS 3: unify tone/terminology across the whole subtitle."""
+    full_preview = "\n".join(f"[{i+1}] {t}" for i, t in enumerate(all_lines[:40]))
+    window_text = "\n".join(f"[{start_idx + j + 1}] {t}" for j, t in enumerate(window_lines))
+    return f"""تو ویراستار ارشد زیرنویس فارسی هستی. کل زیرنویس را یکپارچه کن.
+
+نکات کلی برای حفظ یکنواختی در کل متن:
+- یک اصطلاح انگلیسی در همه جای متن با یک معادل فارسی ثابت ترجمه شود.
+- لحن در کل متن یکدست باشد (جدی/خودمانی/آموزشی متناسب با ویدیو).
+- فعل‌ها و ضمایر در کل متن هماهنگ باشند.
+- روانی و طبیعی بودن دیالوگ اولویت دارد؛ ترجمه تحت‌اللفظی ممنوع.
+- نیم‌فاصله (ZWNJ) درست رعایت شود: می‌کند, کتاب‌ها, بی‌اختیار, نشسته‌اند, سریع‌تر.
+
+نمونه‌ای از کل متن (برای درک لحن و اصطلاحات):
+{full_preview}
+
+حالا این خطوط را طوری بازنویسی کن که با کل متن هماهنگ باشند.
+فقط فارسی بازنویسی‌شده، شماره‌گذاری شده (همان شماره‌ها). بدون توضیح.
+
+{window_text}"""
+
+def unify_chunk(args):
+    """PASS 3: Unify a window of lines for global consistency."""
+    chunk, router = args
+    chunk_num = chunk["num"]
+    start_idx = chunk["start_idx"]
+    window_lines = chunk["lines"]
+
+    prompt = build_unify_prompt(all_translations, start_idx, window_lines)
+
+    router_order = routers[:]
+    random.shuffle(router_order)
+
+    try:
+        raw = call_router_with_fallback(prompt, router_order,
+                                        expected_count=len(window_lines),
+                                        temperature=0.1, max_tokens=8000)
+        unified = parse_numbered_response(raw, len(window_lines))
+        # Pad if short (keep original window lines, offset by window position)
+        while len(unified) < len(window_lines):
+            unified.append(window_lines[len(unified)])
+        return (chunk_num, start_idx, unified, None)
+    except Exception as e:
+        print(f"  ❌ PASS 3 Chunk {chunk_num} FAILED after all retries: {e}")
+        return (chunk_num, start_idx, window_lines, str(e))
+
+# Overlapping windows: 30 lines per window with 10-line overlap
+WINDOW_SIZE = 30
+OVERLAP = 10
+unify_chunks = []
+win_num = 1
+start = 0
+while start < len(all_translations):
+    window = all_translations[start:start + WINDOW_SIZE]
+    unify_chunks.append({"start_idx": start, "lines": window, "num": win_num})
+    win_num += 1
+    start += WINDOW_SIZE - OVERLAP
+
+print(f"\n📦 PASS 3 (Unify): {len(unify_chunks)} windows of ~{WINDOW_SIZE} lines (overlap {OVERLAP})")
+
+unify_pairs = [(chunk, routers[i % len(routers)]) for i, chunk in enumerate(unify_chunks)]
+pass3_results = run_parallel_pass("PASS 3 (Unify)", len(routers), unify_chunk, unify_pairs)
+
+# Merge PASS 3: for overlapping regions, last writer wins (later windows refine earlier)
+# Count votes per index to pick most consistent version
+from collections import defaultdict
+vote_counts = defaultdict(int)
+unified_votes = defaultdict(dict)
+
+for chunk_num in sorted(pass3_results.keys()):
+    start_idx, lines = pass3_results[chunk_num]
+    for j, line in enumerate(lines):
+        idx = start_idx + j
+        if idx < len(all_translations):
+            vote_counts[idx] += 1
+            unified_votes[idx][chunk_num] = line
+
+# For each line, prefer the version from the LAST window (most context), else majority
+final_wa = list(all_translations)
+for idx in range(len(all_translations)):
+    if idx in unified_votes and unified_votes[idx]:
+        # Take version from the highest-numbered chunk (later window)
+        best_chunk = max(unified_votes[idx].keys())
+        final_wa[idx] = unified_votes[idx][best_chunk]
+
+all_translations = final_wa
+unified_change = sum(1 for i, t in enumerate(all_translations)
+                     if i < len(raw_translations) and t != raw_translations[i])
+print(f"📊 PASS 3: {unified_change} lines refined for consistency")
+
 # --- Save ---
 with open(output_path, "w", encoding="utf-8") as f:
     json.dump(all_translations, f, ensure_ascii=False, indent=2)
