@@ -23,12 +23,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install 9Router + cloudflared
+      - name: Install 9Router
         run: |
           npm install -g 9router@0.5.40 2>&1 | tail -2
-          curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
-          chmod +x /usr/local/bin/cloudflared
-          cloudflared --version 2>&1 | head -1
 
       - name: Prepare 9Router instance
         run: |
@@ -95,14 +92,14 @@ jobs:
           HOME="$DATADIR" \
           NODE_PATH="$NODE_PATH" \
           PORT=21001 \
-          HOSTNAME=127.0.0.1 \
+          HOSTNAME=0.0.0.0 \
           node --dns-result-order=ipv4first --max-old-space-size=512 "$SERVER" \
             > /tmp/router.log 2>&1 &
 
           echo "Waiting for 9Router to start..."
           for i in $(seq 1 30); do
             if curl -s -m 5 http://127.0.0.1:21001/v1/models > /dev/null 2>&1; then
-              echo "OK 9Router ready on port 21001"
+              echo "OK 9Router ready on port 21001 (0.0.0.0)"
               break
             fi
             sleep 2
@@ -115,28 +112,30 @@ jobs:
             -d '{"model":"oc/deepseek-v4-flash-free","messages":[{"role":"user","content":"say hi"}],"max_tokens":20}' | head -c 150)
           echo "Test result: $TEST"
 
-      - name: Start cloudflared tunnel
+      - name: Join Tailnet + register worker info
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         run: |
-          cloudflared tunnel --url http://localhost:21001 --no-autoupdate \
-            > /tmp/tunnel.log 2>&1 &
-          echo "Waiting for tunnel URL..."
-          URL=""
-          for i in $(seq 1 30); do
-            URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' /tmp/tunnel.log | head -1)
-            if [ -n "$URL" ]; then
-              echo "OK Tunnel URL: $URL"
-              break
-            fi
-            sleep 2
+          # Install tailscale
+          curl -fsSL https://tailscale.com/install.sh | sh > /tmp/ts_install.log 2>&1 || true
+          # Start tailscaled in userspace networking mode (no root/systemd needed)
+          (tailscaled --tun=userspace-networking --socket=/tmp/ts.sock > /tmp/tsd.log 2>&1 &)
+          for i in $(seq 1 15); do
+            if [ -S /tmp/ts.sock ]; then break; fi
+            sleep 1
           done
-
-          if [ -z "$URL" ]; then
-            echo "ERROR Tunnel failed"
+          # Join tailnet
+          tailscale --socket=/tmp/ts.sock up --authkey="$TS_AUTHKEY" --hostname="worker-${{ matrix.worker }}" > /tmp/ts_up.log 2>&1
+          sleep 5
+          TS_IP=$(tailscale --socket=/tmp/ts.sock ip -4 2>/dev/null | head -1)
+          if [ -z "$TS_IP" ]; then
+            echo "ERROR: tailscale join failed"
+            cat /tmp/ts_up.log; cat /tmp/tsd.log | tail -5
             exit 1
           fi
-
+          echo "✅ Tailscale IP: $TS_IP"
           APIKEY=$(cat /tmp/router_api_key.txt)
-          echo "${{ matrix.worker }}|$URL|$APIKEY" > /tmp/worker-${{ matrix.worker }}.txt
+          echo "${{ matrix.worker }}|http://$TS_IP:21001|$APIKEY" > /tmp/worker-${{ matrix.worker }}.txt
           cat /tmp/worker-${{ matrix.worker }}.txt
 
       - name: Upload worker info artifact
@@ -186,6 +185,24 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg fonts-vazirmatn curl
+
+      - name: Join Tailnet (main)
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh > /tmp/ts_install.log 2>&1 || true
+          (tailscaled --tun=userspace-networking --socket=/tmp/ts.sock > /tmp/tsd.log 2>&1 &)
+          for i in $(seq 1 15); do
+            if [ -S /tmp/ts.sock ]; then break; fi
+            sleep 1
+          done
+          tailscale --socket=/tmp/ts.sock up --authkey="$TS_AUTHKEY" --hostname="main-runner" > /tmp/ts_up.log 2>&1
+          sleep 5
+          TS_IP=$(tailscale --socket=/tmp/ts.sock ip -4 2>/dev/null | head -1)
+          echo "Main Tailscale IP: $TS_IP"
+          if [ -z "$TS_IP" ]; then
+            echo "Warning: main not in tailnet — will retry"
+          fi
 
       - name: Install Python dependencies
         run: |
