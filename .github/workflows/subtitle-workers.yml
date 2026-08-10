@@ -150,18 +150,12 @@ jobs:
       # If this job ends, the runner is killed and the tunnel dies.
       - name: Keep alive until main finishes
         run: |
-          echo "Keeping tunnel alive for main pipeline (max 45 min)..."
-          for i in $(seq 1 90); do
+          echo "Keeping tunnel alive for main pipeline (max 15 min for test)..."
+          for i in $(seq 1 30); do
             sleep 30
-            # Check if main signaled completion via a marker commit (skip for now — just stay alive)
             true
           done
-          echo "Keep-alive expired (45 min). Tunnel closing."
-      - name: Keep alive phase 2
-        run: |
-          echo "Extended keep-alive (another 45 min)..."
-          sleep 2700
-          echo "Extended keep-alive expired."
+          echo "Keep-alive expired (15 min). Tunnel closing."
 
   # Main job — runs after all workers are up
   subtitle:
@@ -217,6 +211,11 @@ jobs:
           echo "Routers:"
           cat /tmp/router_keys.txt
           cp /tmp/router_keys.txt output/router_keys.txt
+
+      - name: TEST — ping all 9 workers with unique questions
+        run: |
+          python3 scripts/test_workers.py output/router_keys.txt
+          echo "--- Test completed ---"
 
       - name: Translate to Persian (9 workers x DeepSeek)
         run: |
