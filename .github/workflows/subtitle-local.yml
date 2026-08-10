@@ -166,3 +166,26 @@ jobs:
       - name: Output result
         run: |
           cat output/result.json
+
+  cleanup:
+    needs: subtitle
+    runs-on: ubuntu-latest
+    if: success()
+    permissions:
+      contents: write
+    steps:
+      - name: Delete releases older than 7 days
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CUTOFF=$(date -u -d "7 days ago" +%Y-%m-%dT%H:%M:%SZ)
+          echo "Deleting releases older than: $CUTOFF"
+          gh release list --repo subtitlepipeline/subtitle-pipeline --json tagName,createdAt -q '.[] | "\(.createdAt) \(.tagName)"' | while read -r line; do
+            CREATED=$(echo "$line" | awk '{print $1}')
+            TAG=$(echo "$line" | awk '{print $2}')
+            if [[ "$CREATED" < "$CUTOFF" ]]; then
+              echo "deleting $TAG ($CREATED)"
+              gh release delete "$TAG" --repo subtitlepipeline/subtitle-pipeline --yes --cleanup-tag
+            fi
+          done
+          echo "cleanup done"
