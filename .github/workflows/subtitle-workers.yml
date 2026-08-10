@@ -118,8 +118,13 @@ jobs:
         run: |
           # Install tailscale
           curl -fsSL https://tailscale.com/install.sh | sh > /tmp/ts_install.log 2>&1 || true
-          # Start tailscaled (normal tun mode — GitHub runners have /dev/net/tun)
-          (tailscaled --socket=/tmp/ts.sock > /tmp/tsd.log 2>&1 &)
+          # GitHub runners have a preinstalled tailscaled — kill it (owns the TUN)
+          sudo systemctl stop tailscaled 2>/dev/null || true
+          sudo pkill -f tailscaled 2>/dev/null || true
+          sleep 2
+          rm -f /tmp/ts.sock
+          # Start tailscaled (normal tun mode)
+          (tailscaled --socket=/tmp/ts.sock --state=/tmp/ts.state > /tmp/tsd.log 2>&1 &)
           for i in $(seq 1 15); do
             if [ -S /tmp/ts.sock ]; then break; fi
             sleep 1
@@ -201,7 +206,11 @@ jobs:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh > /tmp/ts_install.log 2>&1 || true
-          (tailscaled --socket=/tmp/ts.sock > /tmp/tsd.log 2>&1 &)
+          sudo systemctl stop tailscaled 2>/dev/null || true
+          sudo pkill -f tailscaled 2>/dev/null || true
+          sleep 2
+          rm -f /tmp/ts.sock
+          (tailscaled --socket=/tmp/ts.sock --state=/tmp/ts.state > /tmp/tsd.log 2>&1 &)
           for i in $(seq 1 15); do
             if [ -S /tmp/ts.sock ]; then break; fi
             sleep 1

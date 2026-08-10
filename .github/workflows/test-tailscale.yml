@@ -12,8 +12,13 @@ jobs:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         run: |
           set -x
+          # GitHub runners have a preinstalled tailscaled — kill it first (it owns the TUN)
+          sudo systemctl stop tailscaled 2>/dev/null || true
+          sudo pkill -f tailscaled 2>/dev/null || true
+          sleep 2
+          rm -f /tmp/ts.sock
           curl -fsSL https://tailscale.com/install.sh | sh 2>&1 | tail -3
-          (tailscaled --socket=/tmp/ts.sock > /tmp/tsd.log 2>&1 &)
+          (tailscaled --socket=/tmp/ts.sock --state=/tmp/ts.state > /tmp/tsd.log 2>&1 &)
           for i in $(seq 1 15); do
             if [ -S /tmp/ts.sock ]; then echo "socket ready"; break; fi
             sleep 1
