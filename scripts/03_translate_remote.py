@@ -91,8 +91,8 @@ def build_refine_prompt(numbered_pairs):
 
 # ============ API CALL ============
 
-def call_router(router, prompt, max_tokens=8000, temperature=0.2, retries=3, timeout=180):
-    """Call a remote 9Router instance with retries."""
+def call_router(router, prompt, max_tokens=8000, temperature=0.2, retries=3, timeout=45):
+    """Call a remote 9Router instance with retries (45s timeout — fast fail on dead workers)."""
     base_url = router["url"].rstrip("/") + "/v1"
     client = OpenAI(base_url=base_url, api_key=router["key"])
     last_error = None
@@ -148,7 +148,7 @@ def extract_persian_from_reasoning(reasoning):
         return "\n".join(f"{i+1}. {t}" for i, t in enumerate(all_persian))
     return ""
 
-def call_router_with_fallback(prompt, routers, max_tokens=8000, temperature=0.2, retries=3, timeout=180, expected_count=None):
+def call_router_with_fallback(prompt, routers, max_tokens=8000, temperature=0.2, retries=3, timeout=45, expected_count=None):
     """Try multiple routers until we get a complete response."""
     errors = []
     for router in routers:
