@@ -12,7 +12,9 @@ jobs:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         run: |
           set -x
-          # Use the PREINSTALLED tailscaled (systemd service on GH runners)
+          # Install tailscale (NOT preinstalled on GH runners)
+          curl -fsSL https://tailscale.com/install.sh | sh 2>&1 | tail -3
+          echo "--- start systemd ---"
           sudo systemctl start tailscaled 2>&1 | head -2 || true
           sleep 3
           echo "--- tailscale status ---"

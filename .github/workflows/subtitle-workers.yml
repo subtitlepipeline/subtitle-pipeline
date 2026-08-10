@@ -116,7 +116,8 @@ jobs:
         env:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         run: |
-          # Use the PREINSTALLED tailscaled (systemd service on GH runners)
+          # Install tailscale (not preinstalled on GH runners), then use systemd service
+          curl -fsSL https://tailscale.com/install.sh | sh > /tmp/ts_install.log 2>&1 || true
           sudo systemctl start tailscaled 2>&1 | head -1 || true
           sleep 3
           # Join tailnet with tagged authkey
@@ -195,7 +196,8 @@ jobs:
         env:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         run: |
-          # Use preinstalled tailscaled
+          # Install tailscale (not preinstalled), then use systemd service
+          curl -fsSL https://tailscale.com/install.sh | sh > /tmp/ts_install.log 2>&1 || true
           sudo systemctl start tailscaled 2>&1 | head -1 || true
           sleep 3
           sudo tailscale up --authkey="$TS_AUTHKEY" --hostname="main-runner" > /tmp/ts_up.log 2>&1
