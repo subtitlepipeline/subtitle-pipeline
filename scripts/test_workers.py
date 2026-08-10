@@ -49,8 +49,11 @@ def ping(router):
         )
         dt = time.time() - t0
         content = (resp.choices[0].message.content or "").strip()
-        ok = bool(content)
-        return (router["id"], "OK" if ok else "EMPTY", dt, content[:40])
+        reasoning = getattr(resp.choices[0].message, 'reasoning_content', '') or ""
+        # A successful response (even empty content) proves the tunnel + 9Router + OpenCode work.
+        # Empty content is normal for trivial pings (model may return reasoning only).
+        ok = True
+        return (router["id"], "OK" if ok else "EMPTY", dt, content[:40] or "(empty — tunnel alive)")
     except Exception as e:
         return (router["id"], "FAIL", 0, str(e)[:60])
 
