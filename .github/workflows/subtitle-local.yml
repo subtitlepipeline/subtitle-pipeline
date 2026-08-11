@@ -107,11 +107,20 @@ jobs:
           done
 
           APIKEY=$(cat /tmp/router_api_key.txt)
-          TEST=$(curl -s -m 90 http://127.0.0.1:21001/v1/chat/completions \
-            -H 'Content-Type: application/json' \
-            -H "Authorization: Bearer $APIKEY" \
-            -d '{"model":"oc/deepseek-v4-flash-free","messages":[{"role":"user","content":"say hi"}],"max_tokens":20}')
-          echo "Test: $TEST"
+          for attempt in 1 2 3; do
+            echo "Test attempt $attempt/3..."
+            TEST=$(curl -s -m 180 http://127.0.0.1:21001/v1/chat/completions \
+              -H 'Content-Type: application/json' \
+              -H "Authorization: Bearer $APIKEY" \
+              -d '{"model":"oc/deepseek-v4-flash-free","messages":[{"role":"user","content":"say hi"}],"max_tokens":20}')
+            if echo "$TEST" | grep -q '"content"'; then
+              echo "OK OpenCode responded: $TEST"
+              break
+            fi
+            echo "Retry $attempt failed: $TEST"
+            sleep 5
+          done
+          echo "Final test: $TEST"
 
       - name: Install Python dependencies
         run: |
