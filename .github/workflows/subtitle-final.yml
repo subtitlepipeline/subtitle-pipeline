@@ -1,0 +1,187 @@
+name: Subtitle Pipeline (Final)
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'YouTube URL (downloaded on VPS, served via HTTP)'
+        required: true
+        type: string
+
+jobs:
+  subtitle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg fonts-vazirmatn curl
+
+      - name: Install Node.js + 9Router
+        run: |
+          curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+          sudo apt-get install -y nodejs
+          npm install -g 9router@0.5.40 2>&1 | tail -2
+
+      - name: Seed 9Router DB
+        run: |
+          GLOBAL_NM=$(npm root -g)
+          ROUTER_DIR="$GLOBAL_NM/9router"
+          SERVER="$ROUTER_DIR/app/server.js"
+          BUNDLED_NM="$ROUTER_DIR/app/node_modules"
+          echo "$ROUTER_DIR" > /tmp/router_dir.txt
+          echo "$BUNDLED_NM" > /tmp/bundled_nm.txt
+
+          cat > /tmp/seed_db.py << 'PYEOF'
+          import sqlite3, json, uuid, sys, os
+          def seed(datadir, apikey):
+              sqlite_path = os.path.join(datadir, '.9router', 'db', 'data.sqlite')
+              os.makedirs(os.path.dirname(sqlite_path), exist_ok=True)
+              conn = sqlite3.connect(sqlite_path)
+              c = conn.cursor()
+              c.executescript('''
+              CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT);
+              CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY, data TEXT);
+              CREATE TABLE IF NOT EXISTS providerConnections (id TEXT PRIMARY KEY, provider TEXT, authType TEXT, name TEXT, email TEXT, priority INTEGER, isActive INTEGER, data TEXT, createdAt TEXT, updatedAt TEXT);
+              CREATE TABLE IF NOT EXISTS providerNodes (id TEXT PRIMARY KEY, type TEXT, name TEXT, data TEXT, createdAt TEXT, updatedAt TEXT);
+              CREATE TABLE IF NOT EXISTS proxyPools (id TEXT PRIMARY KEY, isActive INTEGER, testStatus TEXT, data TEXT, createdAt TEXT, updatedAt TEXT);
+              CREATE TABLE IF NOT EXISTS apiKeys (id TEXT PRIMARY KEY, key TEXT, name TEXT, machineId TEXT, isActive INTEGER, createdAt TEXT);
+              CREATE TABLE IF NOT EXISTS combos (id TEXT PRIMARY KEY, name TEXT, kind TEXT, models TEXT, createdAt TEXT, updatedAt TEXT);
+              CREATE TABLE IF NOT EXISTS kv (scope TEXT, key TEXT, value TEXT, PRIMARY KEY (scope, key));
+              CREATE TABLE IF NOT EXISTS usageHistory (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, provider TEXT, model TEXT, connectionId TEXT, apiKey TEXT, endpoint TEXT, promptTokens INTEGER, completionTokens INTEGER, cost REAL, status TEXT, tokens TEXT, meta TEXT);
+              CREATE TABLE IF NOT EXISTS usageDaily (dateKey TEXT PRIMARY KEY, data TEXT);
+              CREATE TABLE IF NOT EXISTS requestDetails (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, provider TEXT, model TEXT, connectionId TEXT, status TEXT, data TEXT);
+              ''')
+              combo_id = str(uuid.uuid4())
+              c.execute('INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)',
+                        (combo_id, '9Router', None, json.dumps(['oc/deepseek-v4-flash-free']), '2026-08-08T00:00:00.000Z', '2026-08-08T00:00:00.000Z'))
+              key_id = str(uuid.uuid4())
+              c.execute('INSERT INTO apiKeys (id, key, name, machineId, isActive, createdAt) VALUES (?, ?, ?, ?, ?, ?)',
+                        (key_id, apikey, 'router-1', None, 1, '2026-08-08T00:00:00.000Z'))
+              for model_id in ['deepseek-v4-flash-free', 'mimo-v2.5-free', 'longcat-2.0-free']:
+                  kv_key = 'oc|' + model_id + '|llm'
+                  kv_val = json.dumps({'providerAlias': 'oc', 'id': model_id, 'type': 'llm', 'name': model_id})
+                  c.execute('INSERT OR REPLACE INTO kv (scope, key, value) VALUES (?, ?, ?)', ('customModels', kv_key, kv_val))
+              c.execute('INSERT OR REPLACE INTO _meta (key, value) VALUES (?, ?)', ('schemaVersion', '1'))
+              c.execute('INSERT OR REPLACE INTO _meta (key, value) VALUES (?, ?)', ('backupSchemaVersion', '1'))
+              conn.commit()
+              conn.close()
+          seed(sys.argv[1], sys.argv[2])
+          PYEOF
+
+          DATADIR="/tmp/router-local"
+          APIKEY="sk-par$(openssl rand -hex 16)"
+          mkdir -p "$DATADIR/.9router/db"
+          python3 /tmp/seed_db.py "$DATADIR" "$APIKEY"
+          echo "$APIKEY" > /tmp/router_api_key.txt
+
+      - name: Start 9Router
+        run: |
+          ROUTER_DIR=$(cat /tmp/router_dir.txt)
+          BUNDLED_NM=$(cat /tmp/bundled_nm.txt)
+          SERVER="$ROUTER_DIR/app/server.js"
+          DATADIR="/tmp/router-local"
+          RUNTIME_NM="$DATADIR/.9router/runtime/node_modules"
+          NODE_PATH="$RUNTIME_NM:$BUNDLED_NM:$NODE_PATH"
+
+          HOME="$DATADIR" \
+          NODE_PATH="$NODE_PATH" \
+          PORT=21001 \
+          HOSTNAME=127.0.0.1 \
+          node --dns-result-order=ipv4first --max-old-space-size=512 "$SERVER" \
+            > /tmp/router.log 2>&1 &
+
+          echo "Waiting for 9Router..."
+          for i in $(seq 1 30); do
+            if curl -s -m 5 http://127.0.0.1:21001/v1/models > /dev/null 2>&1; then
+              echo "OK 9Router ready on port 21001"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install faster-whisper pysubs2 openai requests
+
+      - name: Download video from VPS
+        env:
+          VPS_IP: ${{ secrets.VPS_IP }}
+        run: |
+          mkdir -p output
+          curl -sL "http://$VPS_IP:9999/video.mp4" -o output/video.mp4
+          curl -sL "http://$VPS_IP:9999/title.txt" -o output/title.txt
+          ls -lh output/video.mp4
+          echo "Video title: $(cat output/title.txt)"
+          ffprobe -v error -show_entries stream=width,height -of csv=p=0 output/video.mp4
+
+      - name: Whisper transcription (large-v3)
+        run: |
+          python3 scripts/02_whisper.py output/video.mp4 output/transcript.json
+
+      - name: Translate to Persian (DeepSeek via local 9Router)
+        env:
+          ROUTER_KEY: ${{ secrets.ROUTER_KEY }}
+        run: |
+          export ROUTER_BASE="http://127.0.0.1:21001/v1"
+          export ROUTER_KEY="$(cat /tmp/router_api_key.txt)"
+          python3 scripts/03_translate.py output/transcript.json output/translated.json
+
+      - name: Build SRT + Validate (3x)
+        run: |
+          python3 scripts/04_build_srt.py output/transcript.json output/translated.json output/subtitle.srt
+          python3 scripts/validate_subs.py output/subtitle.srt fa
+          python3 scripts/validate_subs.py output/subtitle.srt fa
+          python3 scripts/validate_subs.py output/subtitle.srt fa
+
+      - name: Build cinema ASS
+        run: |
+          VIDEO_HEIGHT=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 output/video.mp4)
+          FONTSIZE=$(python3 -c "print(round($VIDEO_HEIGHT * 0.014))")
+          python3 scripts/make_cinema_ass.py output/subtitle.srt output/subtitle.ass $FONTSIZE
+
+      - name: Burn-in subtitles (1080p + 720p + 480p)
+        run: |
+          VIDEO_TITLE=$(cat output/title.txt)
+          python3 scripts/05_burnin.py output/video.mp4 output/subtitle.ass "output/$VIDEO_TITLE"
+
+      - name: Upload to GitHub Release
+        run: |
+          VIDEO_TITLE=$(cat output/title.txt)
+          python3 scripts/06_upload.py "output/$VIDEO_TITLE" output/subtitle.srt output/subtitle.ass "$VIDEO_TITLE"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Output result
+        run: |
+          cat output/result.json
+
+  cleanup:
+    needs: subtitle
+    runs-on: ubuntu-latest
+    if: success()
+    permissions:
+      contents: write
+    steps:
+      - name: Delete releases older than 7 days
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CUTOFF=$(date -u -d "7 days ago" +%Y-%m-%dT%H:%M:%SZ)
+          echo "Deleting releases older than: $CUTOFF"
+          gh release list --repo subtitlepipeline/subtitle-pipeline --json tagName,createdAt -q '.[] | "\(.createdAt) \(.tagName)"' | while read -r line; do
+            CREATED=$(echo "$line" | awk '{print $1}')
+            TAG=$(echo "$line" | awk '{print $2}')
+            if [[ "$CREATED" < "$CUTOFF" ]]; then
+              echo "Deleting release $TAG (created $CREATED)"
+              gh release delete "$TAG" --repo subtitlepipeline/subtitle-pipeline --yes --cleanup-tag
+            fi
+          done
+          echo "Cleanup done"
