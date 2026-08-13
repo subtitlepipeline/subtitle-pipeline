@@ -124,7 +124,7 @@ jobs:
 
       - name: Whisper transcription (large-v3)
         run: |
-          python3 scripts/02_whisper.py output/video.mp4 output/transcript.json
+          python3 scripts/final/02_whisper.py output/video.mp4 output/transcript.json
 
       - name: Translate to Persian (DeepSeek via local 9Router)
         env:
@@ -132,30 +132,30 @@ jobs:
         run: |
           export ROUTER_BASE="http://127.0.0.1:21001/v1"
           export ROUTER_KEY="$(cat /tmp/router_api_key.txt)"
-          python3 scripts/03_translate.py output/transcript.json output/translated.json
+          python3 scripts/final/03_translate.py output/transcript.json output/translated.json
 
       - name: Build SRT + Validate (3x)
         run: |
-          python3 scripts/04_build_srt.py output/transcript.json output/translated.json output/subtitle.srt
-          python3 scripts/validate_subs.py output/subtitle.srt fa
-          python3 scripts/validate_subs.py output/subtitle.srt fa
-          python3 scripts/validate_subs.py output/subtitle.srt fa
+          python3 scripts/final/04_build_srt.py output/transcript.json output/translated.json output/subtitle.srt
+          python3 scripts/final/validate_subs.py output/subtitle.srt fa
+          python3 scripts/final/validate_subs.py output/subtitle.srt fa
+          python3 scripts/final/validate_subs.py output/subtitle.srt fa
 
       - name: Build cinema ASS
         run: |
           VIDEO_HEIGHT=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 output/video.mp4)
           FONTSIZE=$(python3 -c "print(round($VIDEO_HEIGHT * 0.014))")
-          python3 scripts/make_cinema_ass.py output/subtitle.srt output/subtitle.ass $FONTSIZE
+          python3 scripts/final/make_cinema_ass.py output/subtitle.srt output/subtitle.ass $FONTSIZE
 
       - name: Burn-in subtitles (1080p + 720p + 480p)
         run: |
           VIDEO_TITLE=$(cat output/title.txt)
-          python3 scripts/05_burnin.py output/video.mp4 output/subtitle.ass "output/$VIDEO_TITLE"
+          python3 scripts/final/05_burnin.py output/video.mp4 output/subtitle.ass "output/$VIDEO_TITLE"
 
       - name: Upload to GitHub Release
         run: |
           VIDEO_TITLE=$(cat output/title.txt)
-          python3 scripts/06_upload.py "output/$VIDEO_TITLE" output/subtitle.srt output/subtitle.ass "$VIDEO_TITLE"
+          python3 scripts/final/06_upload.py "output/$VIDEO_TITLE" output/subtitle.srt output/subtitle.ass "$VIDEO_TITLE"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
