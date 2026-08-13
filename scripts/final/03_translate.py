@@ -42,7 +42,7 @@ print(f"🔑 Using 9Router: {ROUTER_BASE} model={ROUTER_MODEL}")
 from openai import OpenAI
 client = OpenAI(base_url=ROUTER_BASE, api_key=ROUTER_KEY)
 
-def call_deepseek(prompt, max_tokens=3000, temperature=0.3, retries=5, timeout=180):
+def call_deepseek(prompt, max_tokens=3000, temperature=0.3, retries=10, timeout=180):
     """Call DeepSeek via 9Router with retries.
     
     FIX: Only accept content from message.content — NEVER fall back to reasoning_content.
@@ -138,7 +138,6 @@ Do NOT add any explanation, notes, or commentary.
 # --- Translate in batches ---
 BATCH_SIZE = 40
 translations = []
-failed_batches = 0
 
 for i in range(0, len(texts), BATCH_SIZE):
     batch = texts[i:i + BATCH_SIZE]
@@ -155,16 +154,13 @@ for i in range(0, len(texts), BATCH_SIZE):
         translations.extend(batch_translations)
         print(f"  ✅ Got {len(batch_translations)} translations")
     except Exception as e:
-        print(f"  ❌ Translation failed after all retries: {e}")
-        print(f"  ⚠️ Using original text for batch {batch_num}")
-        translations.extend(batch)
-        failed_batches += 1
+        print(f"  ❌ Translation failed after all {10+1} retries: {e}")
+        print(f"  ❌ Batch {batch_num} could not be translated — aborting")
+        sys.exit(1)
 
 # --- Save ---
 with open(output_path, "w", encoding="utf-8") as f:
     json.dump(translations, f, ensure_ascii=False, indent=2)
 
 print(f"✅ Translated {len(translations)} segments")
-if failed_batches:
-    print(f"⚠️ {failed_batches} batch(es) failed — original text used as fallback")
 print(f"📁 Saved: {output_path}")
