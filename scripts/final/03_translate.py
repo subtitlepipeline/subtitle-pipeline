@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Step 3 (Final): Translate transcripts to Persian using external 9Router API.
-Primary model: tokenrouter/qwen/qwen3.8-max-free
-Fallback model: tokenrouter/deepseek/deepseek-v4-pro-0813-free
+Primary model: tokenrouter/deepseek/deepseek-v4-pro-0813-free (fast, no reasoning)
+Fallback model: tokenrouter/qwen/qwen3.8-max-free (slower, has reasoning)
 
 If primary model fails (empty content or error after retries), switches to fallback.
 """
@@ -31,8 +31,8 @@ print(f"⚡ Translation via external 9Router API with primary+fallback models")
 # --- API config ---
 ROUTER_BASE = os.environ.get("ROUTER_BASE", "https://9router.codol.ir/v1")
 ROUTER_KEY = os.environ.get("ROUTER_KEY", "")
-PRIMARY_MODEL = os.environ.get("ROUTER_MODEL", "tokenrouter/qwen/qwen3.8-max-free")
-FALLBACK_MODEL = os.environ.get("FALLBACK_MODEL", "tokenrouter/deepseek/deepseek-v4-pro-0813-free")
+PRIMARY_MODEL = os.environ.get("ROUTER_MODEL", "tokenrouter/deepseek/deepseek-v4-pro-0813-free")
+FALLBACK_MODEL = os.environ.get("FALLBACK_MODEL", "tokenrouter/qwen/qwen3.8-max-free")
 
 if not ROUTER_KEY:
     print("❌ No ROUTER_KEY found")
@@ -56,7 +56,8 @@ def call_model(model, prompt, max_tokens=8000, temperature=0.3, retries=5, timeo
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=max_tokens,
                 temperature=temperature,
-                timeout=timeout
+                timeout=timeout,
+                extra_body={"enable_thinking": False}
             )
             content = response.choices[0].message.content or ""
             reasoning = getattr(response.choices[0].message, 'reasoning_content', None) or ""
