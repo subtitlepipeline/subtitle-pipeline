@@ -137,6 +137,7 @@ Translation guidelines:
 6. Use formal but accessible Persian — not overly literary, not colloquial.
 7. Maintain the context flow between lines — read consecutive lines as a connected narrative.
 8. Keep translations concise — match roughly the length of the source line.
+9. Use ZWNJ (نیم‌فاصله) correctly in compound words: می‌رود, به‌طور, هم‌زمان, راه‌آهن, سریع‌السیر, آن‌ها, سرعت‌ها
 
 Return ONLY the Persian translations, one per line, numbered exactly like the input.
 Do NOT add any explanation, notes, or commentary.
