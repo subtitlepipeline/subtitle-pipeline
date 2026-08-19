@@ -43,11 +43,11 @@ jobs:
         run: |
           python3 scripts/final/02_whisper.py output/video.mp4 output/transcript.json
 
-      - name: Translate to Persian (Primary+Fallback via external API)
+      - name: Translate to Persian (Primary+Fallback via LiteLLM)
         env:
           ROUTER_KEY: ${{ secrets.ROUTER_KEY }}
         run: |
-          export ROUTER_BASE="https://9router.codol.ir/v1"
+          export ROUTER_BASE="http://95.182.92.43:4000/v1"
           export ROUTER_KEY="${{ secrets.ROUTER_KEY }}"
           python3 scripts/final/03_translate.py output/transcript.json output/translated.json
 
