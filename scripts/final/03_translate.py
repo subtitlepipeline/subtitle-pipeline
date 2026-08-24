@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Step 3 (Final): Translate transcripts to Persian using LiteLLM (local VPS).
-Primary model: glm (fast, no reasoning, excellent ZWNJ)
-Fallback model: nemotron-ultra (slower, has reasoning but content clean)
+Step 3 (Final): Translate transcripts to Persian using the SAME model as Hermes chat.
+Primary model: railway (oc/deepseek-v4-flash-free) — SSE-only, MUST use stream=True
+Fallback model: nvidia (z-ai/glm-5.2) — fast, clean JSON
 
 If primary model fails (empty content or error after retries), switches to fallback.
 """
@@ -26,28 +26,28 @@ lang_map = {"ar": "Arabic", "en": "English", "fa": "Persian", "tr": "Turkish",
 source_name = lang_map.get(source_lang, source_lang)
 
 print(f"📝 {len(texts)} segments to translate (source: {source_name})")
-print(f"⚡ Translation via external 9Router API with primary+fallback models")
+print(f"⚡ Translation via external 9Router API (same model as Hermes chat)")
 
 # --- API config ---
-ROUTER_BASE = os.environ.get("ROUTER_BASE", "http://95.182.92.43:4000/v1")
-ROUTER_KEY = os.environ.get("ROUTER_KEY", "sk-litellm")
-PRIMARY_MODEL = os.environ.get("ROUTER_MODEL", "glm")
-FALLBACK_MODEL = os.environ.get("FALLBACK_MODEL", "nemotron-ultra")
+ROUTER_BASE = os.environ.get("ROUTER_BASE", "https://9router.codol.ir/v1")
+ROUTER_KEY = os.environ.get("ROUTER_KEY", "")
+PRIMARY_MODEL = os.environ.get("ROUTER_MODEL", "nvidia/deepseek-ai/deepseek-v4-flash-0731")
+FALLBACK_MODEL = os.environ.get("FALLBACK_MODEL", "nvidia")
 
 if not ROUTER_KEY:
     print("❌ No ROUTER_KEY found")
     sys.exit(1)
 
 print(f"🔑 API: {ROUTER_BASE}")
-print(f"📌 Primary model: {PRIMARY_MODEL}")
+print(f"📌 Primary model: {PRIMARY_MODEL} (streaming)")
 print(f"📌 Fallback model: {FALLBACK_MODEL}")
 
 from openai import OpenAI
 client = OpenAI(base_url=ROUTER_BASE, api_key=ROUTER_KEY)
 
 
-def call_model(model, prompt, max_tokens=8000, temperature=0.3, retries=5, timeout=180):
-    """Call a model with retries. Returns content string or raises exception."""
+def call_model(model, prompt, max_tokens=8000, temperature=0.3, retries=5, timeout=240):
+    """Call a model with streaming (SSE) + retries. Returns content string or raises."""
     last_error = None
     for attempt in range(retries + 1):
         try:
@@ -56,19 +56,32 @@ def call_model(model, prompt, max_tokens=8000, temperature=0.3, retries=5, timeo
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=max_tokens,
                 temperature=temperature,
-                timeout=timeout
+                timeout=timeout,
+                stream=True
             )
-            content = response.choices[0].message.content or ""
-            reasoning = getattr(response.choices[0].message, 'reasoning_content', None) or ""
+            content_parts = []
+            reasoning_parts = []
+            for chunk in response:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta:
+                    if delta.content:
+                        content_parts.append(delta.content)
+                    r = getattr(delta, 'reasoning_content', None) or ""
+                    if r:
+                        reasoning_parts.append(r)
+            content = "".join(content_parts).strip()
+            reasoning = "".join(reasoning_parts)
 
-            if content.strip():
-                return content.strip()
-            elif reasoning.strip():
+            if content:
+                return content
+            elif reasoning:
                 print(f"  ⚠️ [{model}] Attempt {attempt+1}/{retries+1}: content empty (reasoning {len(reasoning)} chars) — retrying")
-                last_error = Exception("Empty content: model returned reasoning_content only")
+                last_error = Exception("Empty content: reasoning only")
             else:
-                print(f"  ⚠️ [{model}] Attempt {attempt+1}/{retries+1}: empty response — retrying")
-                last_error = Exception("Empty response from model")
+                print(f"  ⚠️ [{model}] Attempt {attempt+1}/{retries+1}: empty stream — retrying")
+                last_error = Exception("Empty stream from model")
 
         except Exception as e:
             last_error = e
@@ -92,7 +105,7 @@ def call_model(model, prompt, max_tokens=8000, temperature=0.3, retries=5, timeo
     raise last_error or Exception(f"{model} failed after all retries")
 
 
-def call_deepseek(prompt, max_tokens=8000, temperature=0.3):
+def call_translate(prompt, max_tokens=8000, temperature=0.3):
     """Try primary model first; if it fails, switch to fallback model."""
     try:
         return call_model(PRIMARY_MODEL, prompt, max_tokens, temperature)
@@ -158,7 +171,7 @@ for i in range(0, len(texts), BATCH_SIZE):
     prompt = build_prompt(source_name, numbered)
 
     try:
-        raw = call_deepseek(prompt)
+        raw = call_translate(prompt)
         batch_translations = parse_numbered_response(raw, len(batch))
         translations.extend(batch_translations)
         print(f"  ✅ Got {len(batch_translations)} translations")
