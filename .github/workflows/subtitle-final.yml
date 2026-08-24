@@ -7,6 +7,10 @@ on:
         description: 'YouTube URL (downloaded on VPS, served via HTTP)'
         required: true
         type: string
+      model:
+        description: 'Primary translation model (optional, overrides default)'
+        required: false
+        type: string
 
 jobs:
   subtitle:
@@ -43,12 +47,17 @@ jobs:
         run: |
           python3 scripts/final/02_whisper.py output/video.mp4 output/transcript.json
 
-      - name: Translate to Persian (Primary+Fallback via LiteLLM)
+      - name: Translate to Persian (Primary+Fallback via external API)
         env:
           ROUTER_KEY: ${{ secrets.ROUTER_KEY }}
+          MODEL_INPUT: ${{ inputs.model }}
         run: |
-          export ROUTER_BASE="http://95.182.92.43:4000/v1"
+          export ROUTER_BASE="https://9router.codol.ir/v1"
           export ROUTER_KEY="${{ secrets.ROUTER_KEY }}"
+          if [ -n "$MODEL_INPUT" ]; then
+            export ROUTER_MODEL="$MODEL_INPUT"
+            echo "📌 Using workflow input model: $MODEL_INPUT"
+          fi
           python3 scripts/final/03_translate.py output/transcript.json output/translated.json
 
       - name: Build SRT + Validate (3x)
