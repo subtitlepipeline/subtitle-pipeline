@@ -47,7 +47,22 @@ jobs:
 
           results = []
           for seg in segments:
-              results.append({'start': round(seg.start, 3), 'end': round(seg.end, 3), 'text': seg.text.strip()})
+              text = seg.text.strip()
+              # Split long segments by sentence boundaries
+              import re
+              sentences = re.split(r'(?<=[.؟!])\s+', text)
+              if len(sentences) <= 1:
+                  results.append({'start': round(seg.start, 3), 'end': round(seg.end, 3), 'text': text})
+              else:
+                  duration = seg.end - seg.start
+                  total_chars = sum(len(s) for s in sentences)
+                  offset = seg.start
+                  for s in sentences:
+                      s = s.strip()
+                      if not s: continue
+                      s_dur = (len(s) / total_chars) * duration
+                      results.append({'start': round(offset, 3), 'end': round(offset + s_dur, 3), 'text': s})
+                      offset += s_dur
 
           output = {
               'language': info.language,
