@@ -1,0 +1,76 @@
+name: Whisper Only
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'YouTube URL'
+        required: true
+        type: string
+
+jobs:
+  whisper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Install system packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install faster-whisper
+
+      - name: Download video from VPS
+        env:
+          VPS_IP: ${{ secrets.VPS_IP }}
+        run: |
+          mkdir -p output
+          curl -sL "http://$VPS_IP:9999/video.mp4" -o output/video.mp4
+          curl -sL "http://$VPS_IP:9999/title.txt" -o output/title.txt
+          ls -lh output/video.mp4
+
+      - name: Whisper large-v3 transcription
+        run: |
+          python3 -c "
+          from faster_whisper import WhisperModel
+          import json
+
+          print('Loading Whisper large-v3...')
+          model = WhisperModel('large-v3', device='cpu', compute_type='int8')
+          print('Transcribing...')
+          segments, info = model.transcribe('output/video.mp4', beam_size=5)
+
+          results = []
+          for seg in segments:
+              results.append({'start': round(seg.start, 3), 'end': round(seg.end, 3), 'text': seg.text.strip()})
+
+          output = {
+              'language': info.language,
+              'language_probability': round(info.language_probability, 3),
+              'duration': round(info.duration, 2),
+              'segments': results
+          }
+          with open('output/transcript.json', 'w', encoding='utf-8') as f:
+              json.dump(output, f, ensure_ascii=False, indent=2)
+
+          print(f'Done: {len(results)} segments, language={info.language}')
+          for s in results:
+              print(f'[{s[\"start\"]:.1f}s] {s[\"text\"]}')
+          "
+
+      - name: Upload transcript
+        run: |
+          VIDEO_TITLE=$(cat output/title.txt 2>/dev/null || echo "transcript")
+          gh release create "whisper-$VIDEO_TITLE" output/transcript.json \
+            --repo ${{ github.repository }} \
+            --title "Whisper: $VIDEO_TITLE" \
+            --generate-notes 2>/dev/null || \
+          gh release upload "whisper-$VIDEO_TITLE" output/transcript.json \
+            --repo ${{ github.repository }} --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
