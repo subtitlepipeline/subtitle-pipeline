@@ -15,6 +15,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Install system packages
         run: |
           sudo apt-get update -qq
@@ -35,74 +38,7 @@ jobs:
           ls -lh output/video.mp4
 
       - name: Whisper large-v3 transcription
-        run: |
-          python3 -c "
-          from faster_whisper import WhisperModel
-          import json, re
-
-          print('Loading Whisper large-v3...')
-          model = WhisperModel('large-v3', device='cpu', compute_type='int8', cpu_threads=4, num_workers=1)
-          print('Transcribing with word timestamps...')
-          segments, info = model.transcribe(
-              'output/video.mp4', beam_size=1,
-              vad_filter=False, word_timestamps=True, condition_on_previous_text=False
-          )
-
-          # Collect all words with timestamps
-          all_words = []
-          for seg in segments:
-              if seg.words:
-                  for w in seg.words:
-                      all_words.append({'start': w.start, 'end': w.end, 'word': w.word.strip()})
-              else:
-                  # fallback: split by spaces and estimate timestamps
-                  words = seg.text.strip().split()
-                  if words:
-                      dur = seg.end - seg.start
-                      per_word = dur / len(words)
-                      for i, w in enumerate(words):
-                          all_words.append({'start': seg.start + i*per_word, 'end': seg.start + (i+1)*per_word, 'word': w})
-
-          # Group words into sentence-level segments
-          sentences = []
-          current_words = []
-          for w in all_words:
-              current_words.append(w)
-              # Check if this word ends a sentence
-              if re.search(r'[.؟!،]$', w['word']):
-                  text = ' '.join(cw['word'] for cw in current_words)
-                  text = re.sub(r'\s+([،.؟!])', r'\1', text)
-                  sentences.append({
-                      'start': round(current_words[0]['start'], 3),
-                      'end': round(current_words[-1]['end'], 3),
-                      'text': text
-                  })
-                  current_words = []
-
-          # Remaining words without sentence-ending punctuation
-          if current_words:
-              text = ' '.join(cw['word'] for cw in current_words)
-              sentences.append({
-                  'start': round(current_words[0]['start'], 3),
-                  'end': round(current_words[-1]['end'], 3),
-                  'text': text
-              })
-
-          output = {
-              'language': info.language,
-              'language_probability': round(info.language_probability, 3),
-              'duration': round(info.duration, 2),
-              'segments': sentences
-          }
-          with open('output/transcript.json', 'w', encoding='utf-8') as f:
-              json.dump(output, f, ensure_ascii=False, indent=2)
-
-          print(f'Done: {len(sentences)} segments, language={info.language}')
-          for i, s in enumerate(sentences, 1):
-              m = int(s['start'] // 60)
-              sec = int(s['start'] % 60)
-              print(f'{i:2d}. [{m:02d}:{sec:02d}] {s[\"text\"]}')
-          "
+        run: python3 scripts/whisper_transcribe.py output/video.mp4 output/transcript.json
 
       - name: Upload transcript
         run: |
