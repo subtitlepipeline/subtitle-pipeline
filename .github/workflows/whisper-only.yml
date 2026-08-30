@@ -11,7 +11,7 @@ on:
 jobs:
   whisper:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 180
     permissions:
       contents: write
     steps:
@@ -41,11 +41,11 @@ jobs:
           import json, re
 
           print('Loading Whisper large-v3...')
-          model = WhisperModel('large-v3', device='cpu', compute_type='int8')
+          model = WhisperModel('large-v3', device='cpu', compute_type='int8', cpu_threads=4, num_workers=1)
           print('Transcribing with word timestamps...')
           segments, info = model.transcribe(
-              'output/video.mp4', beam_size=5,
-              vad_filter=False, word_timestamps=True
+              'output/video.mp4', beam_size=1,
+              vad_filter=False, word_timestamps=True, condition_on_previous_text=False
           )
 
           # Collect all words with timestamps
