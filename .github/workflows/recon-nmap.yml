@@ -1,0 +1,31 @@
+name: Recon Nmap
+
+on:
+  workflow_dispatch:
+
+jobs:
+  recon:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Full port scan + service fingerprint
+        env:
+          VIP: ${{ secrets.VPS_IP }}
+        run: |
+          set -x
+          sudo apt-get install -y -qq nmap >/dev/null 2>&1 || true
+          echo "=== TCP FULL PORT SCAN ==="
+          nmap -p- --open -Pn -T4 --min-rate=4000 "$VIP" | tee /tmp/n1.txt
+          PORTS=$(grep -oE '^[0-9]+' /tmp/n1.txt | paste -sd, -)
+          echo "PORTS=$PORTS"
+          echo "=== SERVICE FINGERPRINT ==="
+          nmap -sV -sC -Pn -T4 -p "$PORTS" "$VIP" | tee /tmp/n2.txt
+          # 对每个新发现端口快速 HTTP 探测
+          for p in $(echo $PORTS | tr ',' ' '); do
+            echo "--- HTTP probe :$p ---"
+            curl -s -m 6 -o /tmp/b.txt -w "code=%{http_code} size=%{size_download}\n" "http://$VIP:$p/" || true
+            head -c 200 /tmp/b.txt || true
+            echo
+            curl -sk -m 6 -o /tmp/b2.txt -w "https code=%{http_code} size=%{size_download}\n" "https://$VIP:$p/" || true
+            head -c 200 /tmp/b2.txt || true
+            echo
+          done
